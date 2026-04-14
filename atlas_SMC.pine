@@ -1,0 +1,1104 @@
+//@version=6
+indicator("Atlas SMC v7  |  Scalp", overlay=true, max_bars_back=500, max_lines_count=500, max_labels_count=500, max_boxes_count=200)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATLAS SMC v7  |  Final Build
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── INPUTS ───────────────────────────────────────────────────────────────────
+var string GW = "Webhook"
+wURL    = input.string("https://atlas-scalp-production.up.railway.app/webhook", "Webhook URL",    group=GW)
+wSecret = input.string("scalper-webhook-secret-2026",                            "Webhook Secret", group=GW)
+
+var string GS = "Structure"
+sw15         = input.int(5,     "15m Swing Lookback",        minval=2, maxval=20,   group=GS)
+sw4h         = input.int(3,     "4H Swing Lookback",         minval=2, maxval=10,   group=GS)
+eqMult       = input.float(0.3, "EQH/EQL Tolerance (ATR×)", minval=0.1, maxval=2.0, group=GS)
+expiry       = input.int(40,    "Setup Expiry (bars)",       minval=10, maxval=200,  group=GS)
+minChochBars = input.int(3,     "Min Bars Sweep→CHoCH",     minval=1,  maxval=10,   group=GS)
+
+var string GF = "FVG"
+fvgMult     = input.float(0.1, "5m FVG Min Size (ATR×)",               minval=0.02, maxval=1.0, group=GF)
+fvgDep      = input.float(0.5, "FVG Entry Depth (0=top, 1=full fill)", minval=0.05, maxval=1.0, group=GF)
+macroMult   = input.float(1.5, "Macro FVG Candle Size (ATR×)",         minval=1.0,  maxval=5.0, group=GF)
+macroExpiry = input.int(200,   "Macro FVG Expiry (bars)",               minval=50,  maxval=500, group=GF)
+sweepThresh = input.float(0.6, "Macro Sweep Close Ratio",               minval=0.4, maxval=0.9, group=GF)
+
+var string GR = "Risk"
+slBuf       = input.float(0.25, "SL ATR Buffer",           minval=0.05, maxval=2.0, group=GR)
+minR        = input.float(1.5,  "Minimum R to TP (skip below)", minval=0.5, maxval=3.0, group=GR,
+     tooltip="If nearest TP level is less than this R away, signal is flagged LOW R.")
+rrTarget    = input.float(2.0,  "Target R",                minval=1.0,  maxval=5.0, group=GR,
+     tooltip="Your R target. Used in strength score and TP display.")
+cdRev       = input.int(12,     "Cooldown REV (bars)",     minval=1,    maxval=50,  group=GR)
+cdCont      = input.int(8,      "Cooldown CONT (bars)",    minval=1,    maxval=50,  group=GR)
+cdRtest     = input.int(5,      "Cooldown RTEST (bars)",   minval=1,    maxval=50,  group=GR)
+cdMacro     = input.int(6,      "Cooldown MACRO (bars)",   minval=1,    maxval=50,  group=GR)
+
+var string GH = "Trade Health"
+timeStop    = input.int(8,      "Time Stop (bars after entry)", minval=3, maxval=30, group=GH,
+     tooltip="Warning fires if price hasn't moved in your direction after this many bars.")
+showHealth  = input.bool(true,  "Show Trade Health Warnings",           group=GH)
+
+var string GX = "Filters"
+volMult     = input.float(1.5,  "Volatility Circuit Breaker (ATR×avg)", minval=1.0, maxval=5.0, group=GX)
+shockMult   = input.float(3.0,  "Shock Candle Size (ATR×)",             minval=1.5, maxval=8.0, group=GX)
+shockFreeze = input.int(5,      "Shock Freeze (bars)",                  minval=1,   maxval=20,  group=GX)
+useSession  = input.bool(true,  "Session Filter (suppress dead zone)",                          group=GX)
+useRange    = input.bool(false, "Range Filter (suppress when ranging)",                         group=GX)
+rangeLook   = input.int(20,     "Range Detection Lookback (bars)",      minval=10,  maxval=50,  group=GX)
+
+var string GD = "Display"
+show4HLevels = input.bool(true,  "Show 4H Key Levels",       group=GD)
+show4HEQ     = input.bool(true,  "Show 4H EQH / EQL",        group=GD)
+show15EQ     = input.bool(true,  "Show 15m EQH / EQL",       group=GD)
+showSW       = input.bool(false, "Show 15m Swing Labels",     group=GD)
+showLBL      = input.bool(true,  "Show Sweep / BOS / CHoCH", group=GD)
+showFVG      = input.bool(true,  "Show 5m FVG Boxes",         group=GD)
+showMacroFVG = input.bool(true,  "Show Macro FVG Boxes",      group=GD)
+showTP       = input.bool(true,  "Show TP Lines",             group=GD)
+showSessions = input.bool(true,  "Show Session Background",   group=GD)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1.  SESSION DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+utcH = hour(time, "UTC")
+
+isAsian     = utcH >= 0  and utcH < 7
+isLondon    = utcH >= 7  and utcH < 10
+isLondonMid = utcH >= 10 and utcH < 13
+isNY        = utcH >= 13 and utcH < 17
+isNYMid     = utcH >= 17 and utcH < 20
+isDeadZone  = utcH >= 20
+
+sessName  = isAsian ? "ASIAN" : isLondon ? "LONDON" : isLondonMid ? "LONDON MID" : isNY ? "NY OPEN" : isNYMid ? "NY MID" : "DEAD ZONE"
+primeSess = isLondon or isNY
+
+bgcolor(showSessions and isLondon   ? color.new(color.blue,  93) :
+        showSessions and isNY       ? color.new(color.green, 93) :
+        showSessions and isAsian    ? color.new(color.gray,  96) :
+        showSessions and isDeadZone ? color.new(color.red,   97) : na)
+
+activeSession = not useSession or not isDeadZone
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2.  VOLATILITY + SHOCK DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+atr    = ta.atr(14)
+atrAvg = ta.sma(atr, 20)
+
+volNormal  = atr <= atrAvg * volMult
+candleMove = math.abs(close - open)
+isShock    = candleMove > atr * shockMult
+
+var int shockBar = 0
+if isShock
+    shockBar := bar_index
+
+shockFrozen = (bar_index - shockBar) <= shockFreeze and shockBar > 0
+
+var bool wasHighVol = false
+postShock = wasHighVol and volNormal
+if not volNormal
+    wasHighVol := true
+if volNormal and wasHighVol and (bar_index - shockBar) > shockFreeze
+    wasHighVol := false
+
+volState   = not volNormal ? "HIGH — SUPPRESSED" :
+             shockFrozen   ? "SHOCK FREEZE"      :
+             postShock     ? "POST-SHOCK"        : "NORMAL"
+
+standardOK = volNormal and not shockFrozen and activeSession
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3.  RANGE DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+recentHighSweep = ta.highest(high, rangeLook) > ta.highest(high, rangeLook)[1]
+recentLowSweep  = ta.lowest(low,   rangeLook) < ta.lowest(low,   rangeLook)[1]
+isRanging       = useRange and recentHighSweep and recentLowSweep
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4.  4H KEY LEVELS
+// ─────────────────────────────────────────────────────────────────────────────
+h4_cls  = request.security(syminfo.tickerid, "240", close,            lookahead=barmerge.lookahead_off)
+h4_atr  = request.security(syminfo.tickerid, "240", ta.atr(14),       lookahead=barmerge.lookahead_off)
+h4_ema  = request.security(syminfo.tickerid, "240", ta.ema(close,21), lookahead=barmerge.lookahead_off)
+
+h4_sh = request.security(syminfo.tickerid, "240",
+     ta.pivothigh(high, sw4h, sw4h), lookahead=barmerge.lookahead_off)
+h4_sl = request.security(syminfo.tickerid, "240",
+     ta.pivotlow(low,  sw4h, sw4h),  lookahead=barmerge.lookahead_off)
+
+var float h4sh1 = na
+var float h4sh2 = na
+var float h4sl1 = na
+var float h4sl2 = na
+
+if not na(h4_sh)
+    h4sh2 := h4sh1
+    h4sh1 := h4_sh
+if not na(h4_sl)
+    h4sl2 := h4sl1
+    h4sl1 := h4_sl
+
+h4eqTol  = h4_atr * eqMult
+h4eqHOK  = not na(h4sh1) and not na(h4sh2) and math.abs(h4sh1-h4sh2) <= h4eqTol
+h4eqLOK  = not na(h4sl1) and not na(h4sl2) and math.abs(h4sl1-h4sl2) <= h4eqTol
+h4eqHLvl = h4eqHOK ? math.max(h4sh1,h4sh2) : na
+h4eqLLvl = h4eqLOK ? math.min(h4sl1,h4sl2) : na
+
+h4_bull   = h4_cls > h4_ema
+h4Context = h4_bull ? "BULL" : "BEAR"
+
+var line h4ShLine  = na
+var line h4SlLine  = na
+var line h4EqhLine = na
+var line h4EqlLine = na
+
+if barstate.islast
+    if show4HLevels
+        if not na(h4ShLine)
+            line.delete(h4ShLine)
+        if not na(h4SlLine)
+            line.delete(h4SlLine)
+        if not na(h4sh1)
+            h4ShLine := line.new(bar_index-120, h4sh1, bar_index+60, h4sh1,
+                 color=color.new(color.red,30), style=line.style_solid, width=2)
+            label.new(bar_index+60, h4sh1, "4H H",
+                 style=label.style_label_left, color=color.new(color.black,60),
+                 textcolor=color.red, size=size.tiny)
+        if not na(h4sl1)
+            h4SlLine := line.new(bar_index-120, h4sl1, bar_index+60, h4sl1,
+                 color=color.new(color.lime,30), style=line.style_solid, width=2)
+            label.new(bar_index+60, h4sl1, "4H L",
+                 style=label.style_label_left, color=color.new(color.black,60),
+                 textcolor=color.lime, size=size.tiny)
+    if show4HEQ
+        if not na(h4EqhLine)
+            line.delete(h4EqhLine)
+        if not na(h4EqlLine)
+            line.delete(h4EqlLine)
+        if h4eqHOK
+            h4EqhLine := line.new(bar_index-120, h4eqHLvl, bar_index+60, h4eqHLvl,
+                 color=color.new(color.red,10), style=line.style_dotted, width=2)
+            label.new(bar_index+60, h4eqHLvl, "4H EQH",
+                 style=label.style_label_left, color=color.new(color.black,60),
+                 textcolor=color.red, size=size.tiny)
+        if h4eqLOK
+            h4EqlLine := line.new(bar_index-120, h4eqLLvl, bar_index+60, h4eqLLvl,
+                 color=color.new(color.lime,10), style=line.style_dotted, width=2)
+            label.new(bar_index+60, h4eqLLvl, "4H EQL",
+                 style=label.style_label_left, color=color.new(color.black,60),
+                 textcolor=color.lime, size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5.  15m STRUCTURE
+// ─────────────────────────────────────────────────────────────────────────────
+eqTol = atr * eqMult
+
+sh15 = ta.pivothigh(high, sw15, sw15)
+sl15 = ta.pivotlow(low,   sw15, sw15)
+
+var float s15h1 = na
+var float s15h2 = na
+var float s15l1 = na
+var float s15l2 = na
+
+if not na(sh15)
+    s15h2 := s15h1
+    s15h1 := sh15
+    if showSW
+        label.new(bar_index-sw15, sh15+atr*.4, "H",
+             style=label.style_label_down, color=color.new(color.red,75),
+             textcolor=color.red, size=size.tiny)
+
+if not na(sl15)
+    s15l2 := s15l1
+    s15l1 := sl15
+    if showSW
+        label.new(bar_index-sw15, sl15-atr*.4, "L",
+             style=label.style_label_up, color=color.new(color.teal,75),
+             textcolor=color.teal, size=size.tiny)
+
+eqHOK  = not na(s15h1) and not na(s15h2) and math.abs(s15h1-s15h2) <= eqTol
+eqLOK  = not na(s15l1) and not na(s15l2) and math.abs(s15l1-s15l2) <= eqTol
+eqHLvl = eqHOK ? math.max(s15h1,s15h2) : na
+eqLLvl = eqLOK ? math.min(s15l1,s15l2) : na
+
+var line eqhL = na
+var line eqlL = na
+
+if eqHOK and show15EQ
+    if not na(eqhL)
+        line.delete(eqhL)
+    eqhL := line.new(bar_index-sw15*4, eqHLvl, bar_index+60, eqHLvl,
+         color=color.new(color.red,30), style=line.style_dotted, width=2)
+    label.new(bar_index-sw15*4, eqHLvl, "EQH",
+         style=label.style_label_right, color=color.new(color.red,80),
+         textcolor=color.red, size=size.tiny)
+
+if eqLOK and show15EQ
+    if not na(eqlL)
+        line.delete(eqlL)
+    eqlL := line.new(bar_index-sw15*4, eqLLvl, bar_index+60, eqLLvl,
+         color=color.new(color.teal,30), style=line.style_dotted, width=2)
+    label.new(bar_index-sw15*4, eqLLvl, "EQL",
+         style=label.style_label_right, color=color.new(color.teal,80),
+         textcolor=color.teal, size=size.tiny)
+
+liqH15 = eqHOK ? eqHLvl : s15h1
+liqL15 = eqLOK ? eqLLvl : s15l1
+
+// ── STATE DECLARATIONS ───────────────────────────────────────────────────────
+var bool  sw15H    = false
+var bool  sw15L    = false
+var int   sw15Hbar = 0
+var int   sw15Lbar = 0
+var float swWickH  = na
+var float swWickL  = na
+
+var bool  chBull    = false
+var bool  chBear    = false
+var int   chBullBar = 0
+var int   chBearBar = 0
+
+var bool  bosBull    = false
+var bool  bosBear    = false
+var int   bosBullBar = 0
+var int   bosBearBar = 0
+var float bosLvlB    = na
+var float bosLvlS    = na
+
+// ── SWEEPS ───────────────────────────────────────────────────────────────────
+sweep15Bear = not na(liqH15) and high > liqH15 and close < liqH15
+sweep15Bull = not na(liqL15) and low  < liqL15 and close > liqL15
+
+if sweep15Bear and not sw15H
+    sw15H    := true
+    sw15Hbar := bar_index
+    swWickH  := high
+    sw15L    := false
+    swWickL  := na
+    chBull   := false
+    chBear   := false
+    bosBull  := false
+    bosBear  := false
+    if showLBL
+        label.new(bar_index, high+atr*.6, "SWEEP↓",
+             style=label.style_label_down, color=color.new(color.red,20),
+             textcolor=color.white, size=size.tiny)
+
+if sweep15Bull and not sw15L
+    sw15L    := true
+    sw15Lbar := bar_index
+    swWickL  := low
+    sw15H    := false
+    swWickH  := na
+    chBull   := false
+    chBear   := false
+    bosBull  := false
+    bosBear  := false
+    if showLBL
+        label.new(bar_index, low-atr*.6, "SWEEP↑",
+             style=label.style_label_up, color=color.new(color.lime,20),
+             textcolor=color.white, size=size.tiny)
+
+if sw15H and (bar_index-sw15Hbar) > expiry
+    sw15H   := false
+    swWickH := na
+if sw15L and (bar_index-sw15Lbar) > expiry
+    sw15L   := false
+    swWickL := na
+
+// ── CHoCH ────────────────────────────────────────────────────────────────────
+chochDistOKBull = sw15L and (bar_index - sw15Lbar) >= minChochBars
+chochDistOKBear = sw15H and (bar_index - sw15Hbar) >= minChochBars
+
+if chochDistOKBull and not na(s15h1) and close > s15h1 and close[1] <= s15h1
+    chBull    := true
+    chBullBar := bar_index
+    sw15L     := false
+    chBear    := false
+    bosBull   := false
+    bosBear   := false
+    if showLBL
+        label.new(bar_index, high+atr*1.0, "CHoCH↑",
+             style=label.style_label_down, color=color.new(color.lime,10),
+             textcolor=color.white, size=size.small)
+
+if chochDistOKBear and not na(s15l1) and close < s15l1 and close[1] >= s15l1
+    chBear    := true
+    chBearBar := bar_index
+    sw15H     := false
+    chBull    := false
+    bosBull   := false
+    bosBear   := false
+    if showLBL
+        label.new(bar_index, low-atr*1.0, "CHoCH↓",
+             style=label.style_label_up, color=color.new(color.red,10),
+             textcolor=color.white, size=size.small)
+
+if chBull and (bar_index-chBullBar) > expiry
+    chBull := false
+if chBear and (bar_index-chBearBar) > expiry
+    chBear := false
+
+// ── BOS ──────────────────────────────────────────────────────────────────────
+if not sw15H and not sw15L and not na(s15h1) and close > s15h1 and close[1] <= s15h1
+    bosBull    := true
+    bosBullBar := bar_index
+    bosLvlB    := s15h1
+    bosBear    := false
+    chBear     := false
+    if showLBL
+        label.new(bar_index, high+atr*.4, "BOS↑",
+             style=label.style_label_down, color=color.new(color.aqua,20),
+             textcolor=color.white, size=size.tiny)
+
+if not sw15L and not sw15H and not na(s15l1) and close < s15l1 and close[1] >= s15l1
+    bosBear    := true
+    bosBearBar := bar_index
+    bosLvlS    := s15l1
+    bosBull    := false
+    chBull     := false
+    if showLBL
+        label.new(bar_index, low-atr*.4, "BOS↓",
+             style=label.style_label_up, color=color.new(color.orange,20),
+             textcolor=color.white, size=size.tiny)
+
+if bosBull and (bar_index-bosBullBar) > expiry
+    bosBull := false
+if bosBear and (bar_index-bosBearBar) > expiry
+    bosBear := false
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6.  MACRO FVG DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+type MacroFVG
+    float  h
+    float  l
+    int    bar
+    bool   alive
+    bool   isBull
+    string mType
+
+var MacroFVG[] macroPool = array.new<MacroFVG>()
+
+candleRange = high - low
+closeRatio  = candleRange > 0 ? (close - low) / candleRange : 0.5
+contThresh  = 1.0 - sweepThresh
+
+isMacroBigBull = (close - open) > atr * macroMult and close > open
+isMacroBigBear = (open - close) > atr * macroMult and close < open
+
+if isMacroBigBull
+    isBullCont  = closeRatio >= sweepThresh
+    isBullSweep = closeRatio <= contThresh
+    if isBullCont and (low - high[2]) > 0
+        mf = MacroFVG.new(low, high[2], bar_index, true, true, "CONT")
+        array.push(macroPool, mf)
+        if array.size(macroPool) > 10
+            array.shift(macroPool)
+        if showMacroFVG
+            box.new(bar_index-2, high[2], bar_index+macroExpiry, low,
+                 border_color=color.new(color.lime,40), bgcolor=color.new(color.lime,94), border_width=1)
+            label.new(bar_index, low, "M↑CONT",
+                 style=label.style_label_up, color=color.new(color.lime,50), textcolor=color.lime, size=size.tiny)
+    if isBullSweep and (low - high[2]) > 0
+        mf = MacroFVG.new(low, high[2], bar_index, true, false, "SWEEP")
+        array.push(macroPool, mf)
+        if array.size(macroPool) > 10
+            array.shift(macroPool)
+        if showMacroFVG
+            box.new(bar_index-2, high[2], bar_index+macroExpiry, low,
+                 border_color=color.new(color.red,40), bgcolor=color.new(color.red,94), border_width=1)
+            label.new(bar_index, low, "M↑SWEEP",
+                 style=label.style_label_up, color=color.new(color.red,50), textcolor=color.red, size=size.tiny)
+
+if isMacroBigBear
+    isBearCont  = closeRatio <= contThresh
+    isBearSweep = closeRatio >= sweepThresh
+    if isBearCont and (low[2] - high) > 0
+        mf = MacroFVG.new(low[2], high, bar_index, true, false, "CONT")
+        array.push(macroPool, mf)
+        if array.size(macroPool) > 10
+            array.shift(macroPool)
+        if showMacroFVG
+            box.new(bar_index-2, high, bar_index+macroExpiry, low[2],
+                 border_color=color.new(color.red,40), bgcolor=color.new(color.red,94), border_width=1)
+            label.new(bar_index, high, "M↓CONT",
+                 style=label.style_label_down, color=color.new(color.red,50), textcolor=color.red, size=size.tiny)
+    if isBearSweep and (low[2] - high) > 0
+        mf = MacroFVG.new(low[2], high, bar_index, true, true, "SWEEP")
+        array.push(macroPool, mf)
+        if array.size(macroPool) > 10
+            array.shift(macroPool)
+        if showMacroFVG
+            box.new(bar_index-2, high, bar_index+macroExpiry, low[2],
+                 border_color=color.new(color.lime,40), bgcolor=color.new(color.lime,94), border_width=1)
+            label.new(bar_index, high, "M↓SWEEP",
+                 style=label.style_label_down, color=color.new(color.lime,50), textcolor=color.lime, size=size.tiny)
+
+if array.size(macroPool) > 0
+    for i = array.size(macroPool)-1 to 0
+        mf = array.get(macroPool, i)
+        if mf.alive and (bar_index - mf.bar) > macroExpiry
+            mf.alive := false
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7.  5m FVG POOL
+// ─────────────────────────────────────────────────────────────────────────────
+f5m_low0  = request.security(syminfo.tickerid, "5", low,        lookahead=barmerge.lookahead_off)
+f5m_low2  = request.security(syminfo.tickerid, "5", low[2],     lookahead=barmerge.lookahead_off)
+f5m_high0 = request.security(syminfo.tickerid, "5", high,       lookahead=barmerge.lookahead_off)
+f5m_high2 = request.security(syminfo.tickerid, "5", high[2],    lookahead=barmerge.lookahead_off)
+f5m_atr   = request.security(syminfo.tickerid, "5", ta.atr(14), lookahead=barmerge.lookahead_off)
+
+fvgMinSz   = f5m_atr * fvgMult
+f5mBullGap = f5m_low0  - f5m_high2
+f5mBearGap = f5m_low2  - f5m_high0
+
+type FVG
+    float  h
+    float  l
+    int    bar
+    bool   alive
+    string tag
+
+var FVG[] bullPool = array.new<FVG>()
+var FVG[] bearPool = array.new<FVG>()
+
+if f5mBullGap > fvgMinSz
+    tag = chBull ? "REV" : bosBull ? "BOS" : "PLAIN"
+    f   = FVG.new(f5m_low0, f5m_high2, bar_index, true, tag)
+    array.push(bullPool, f)
+    if array.size(bullPool) > 8
+        array.shift(bullPool)
+    if showFVG
+        bc = tag=="REV" ? color.new(color.lime,80) : tag=="BOS" ? color.new(color.aqua,80) : color.new(color.gray,93)
+        bd = tag=="REV" ? color.new(color.lime,45) : tag=="BOS" ? color.new(color.aqua,45) : color.new(color.gray,80)
+        box.new(bar_index-2, f5m_high2, bar_index+expiry, f5m_low0, border_color=bd, bgcolor=bc, border_width=1)
+
+if f5mBearGap > fvgMinSz
+    tag = chBear ? "REV" : bosBear ? "BOS" : "PLAIN"
+    f   = FVG.new(f5m_low2, f5m_high0, bar_index, true, tag)
+    array.push(bearPool, f)
+    if array.size(bearPool) > 8
+        array.shift(bearPool)
+    if showFVG
+        bc = tag=="REV" ? color.new(color.red,80)   : tag=="BOS" ? color.new(color.orange,80) : color.new(color.gray,93)
+        bd = tag=="REV" ? color.new(color.red,45)   : tag=="BOS" ? color.new(color.orange,45) : color.new(color.gray,80)
+        box.new(bar_index-2, f5m_high0, bar_index+expiry, f5m_low2, border_color=bd, bgcolor=bc, border_width=1)
+
+// Upgrade PLAIN FVGs — runs after structure detection
+// Also retroactively upgrades FVGs from the prior bar
+if array.size(bullPool) > 0
+    for i = 0 to array.size(bullPool)-1
+        f = array.get(bullPool, i)
+        if f.alive and f.tag == "PLAIN"
+            if chBull
+                f.tag := "REV"
+            else if bosBull
+                f.tag := "BOS"
+        // Also upgrade if structure just confirmed this bar
+        // (catches FVGs that formed same bar as CHoCH/BOS)
+        if f.alive and f.tag == "PLAIN" and (bar_index - f.bar) <= 2
+            if chBull or bosBull
+                f.tag := chBull ? "REV" : "BOS"
+
+if array.size(bearPool) > 0
+    for i = 0 to array.size(bearPool)-1
+        f = array.get(bearPool, i)
+        if f.alive and f.tag == "PLAIN"
+            if chBear
+                f.tag := "REV"
+            else if bosBear
+                f.tag := "BOS"
+        if f.alive and f.tag == "PLAIN" and (bar_index - f.bar) <= 2
+            if chBear or bosBear
+                f.tag := chBear ? "REV" : "BOS"
+
+if array.size(bullPool) > 0
+    for i = array.size(bullPool)-1 to 0
+        f = array.get(bullPool, i)
+        if f.alive and (close < f.l or (bar_index-f.bar) > expiry)
+            f.alive := false
+
+if array.size(bearPool) > 0
+    for i = array.size(bearPool)-1 to 0
+        f = array.get(bearPool, i)
+        if f.alive and (close > f.h or (bar_index-f.bar) > expiry)
+            f.alive := false
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8.  SIGNAL STRENGTH SCORE
+// ─────────────────────────────────────────────────────────────────────────────
+// Called at signal time with setup context
+// Returns score 0-8, grade A/B/C/D, star string
+calcStrength(setupType, isBull, tpDist, slDist, isChoch, isEqSwept) =>
+    score = 0
+
+    // Setup quality
+    if setupType == "REVERSAL" or setupType == "MACRO"
+        score += 2
+    else if setupType == "CONTINUATION"
+        score += 1
+
+    // Prime session
+    if primeSess
+        score += 1
+
+    // 4H agrees
+    if (isBull and h4_bull) or (not isBull and not h4_bull)
+        score += 1
+
+    // EQH/EQL swept (premium liquidity)
+    if isEqSwept
+        score += 1
+
+    // R:R to nearest level meets target
+    if slDist > 0 and tpDist > 0 and (tpDist / slDist) >= rrTarget
+        score += 1
+
+    // CHoCH confirmed (not just BOS)
+    if isChoch
+        score += 1
+
+    // Grade
+    grade = score >= 6 ? "A" : score >= 4 ? "B" : score >= 2 ? "C" : "D"
+    stars = score >= 6 ? "★★★★" : score >= 4 ? "★★★" : score >= 2 ? "★★" : "★"
+
+    [score, grade, stars]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9.  ENTRY ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+var int    lastRevBar    = 0
+var int    lastContBar   = 0
+var int    lastRtestBar  = 0
+var int    lastMacroBar  = 0
+var string lastSetup     = ""
+var string lastMacroType = ""
+var bool   lastMacroBull = false
+var float  lastEntry     = na
+var float  lastSL        = na
+var float  lastFvgH      = na
+var float  lastFvgL      = na
+var int    lastSignalBar = 0
+var bool   lastWasBuy    = false
+
+// Trade health tracking
+var bool  inTrade       = false
+var bool  tradeBull     = false
+var float tradeEntry    = na
+var float tradeSL       = na
+var float tradeTP       = na
+var int   tradeBar      = 0
+var float tradeHighest  = na
+var float tradeLow      = na
+
+structBull = chBull or bosBull
+structBear = chBear or bosBear
+
+counterBull = structBull and not h4_bull
+counterBear = structBear and h4_bull
+
+buyFired   = false
+sellFired  = false
+macroFired = false
+
+cdRev_ok   = (bar_index - lastRevBar)   >= cdRev
+cdCont_ok  = (bar_index - lastContBar)  >= cdCont
+cdRtest_ok = (bar_index - lastRtestBar) >= cdRtest
+
+// ── STANDARD BUY ─────────────────────────────────────────────────────────────
+if standardOK and structBull and not isRanging and array.size(bullPool) > 0
+    for i = array.size(bullPool)-1 to 0
+        f = array.get(bullPool, i)
+        if f.alive and f.tag != "PLAIN" and bar_index > f.bar + 1 and not buyFired
+            cdOK        = f.tag == "REV" ? cdRev_ok : f.tag == "BOS" ? cdCont_ok : cdRtest_ok
+            structMatch = f.tag == "REV" ? chBull : f.tag == "BOS" ? bosBull : structBull
+            if cdOK and structMatch
+                entryTop = f.h
+                entryBot = f.l + (f.h - f.l) * (1.0 - fvgDep)
+                if low <= entryTop and close >= f.l and close >= entryBot
+                    sl = f.tag == "REV" and not na(swWickL) ? swWickL - atr*slBuf :
+                         f.tag == "BOS" and not na(bosLvlB) ? bosLvlB - atr*slBuf :
+                         f.l - atr*slBuf
+                    if sl < close
+                        lastSetup    := f.tag == "REV" ? "REVERSAL" : f.tag == "BOS" ? "CONTINUATION" : "RETEST"
+                        lastEntry    := close
+                        lastSL       := sl
+                        lastFvgH     := f.h
+                        lastFvgL     := f.l
+                        lastWasBuy   := true
+                        f.alive      := false
+                        buyFired     := true
+                        lastSignalBar := bar_index
+                        if f.tag == "REV"
+                            lastRevBar   := bar_index
+                        else if f.tag == "BOS"
+                            lastContBar  := bar_index
+                        else
+                            lastRtestBar := bar_index
+
+// ── STANDARD SELL ────────────────────────────────────────────────────────────
+if standardOK and structBear and not isRanging and array.size(bearPool) > 0
+    for i = array.size(bearPool)-1 to 0
+        f = array.get(bearPool, i)
+        if f.alive and f.tag != "PLAIN" and bar_index > f.bar + 1 and not sellFired
+            cdOK        = f.tag == "REV" ? cdRev_ok : f.tag == "BOS" ? cdCont_ok : cdRtest_ok
+            structMatch = f.tag == "REV" ? chBear : f.tag == "BOS" ? bosBear : structBear
+            if cdOK and structMatch
+                entryBot = f.l
+                entryTop = f.h - (f.h - f.l) * (1.0 - fvgDep)
+                if high >= entryBot and close <= f.h and close <= entryTop
+                    sl = f.tag == "REV" and not na(swWickH) ? swWickH + atr*slBuf :
+                         f.tag == "BOS" and not na(bosLvlS) ? bosLvlS + atr*slBuf :
+                         f.h + atr*slBuf
+                    if sl > close
+                        lastSetup    := f.tag == "REV" ? "REVERSAL" : f.tag == "BOS" ? "CONTINUATION" : "RETEST"
+                        lastEntry    := close
+                        lastSL       := sl
+                        lastFvgH     := f.h
+                        lastFvgL     := f.l
+                        lastWasBuy   := false
+                        f.alive      := false
+                        sellFired    := true
+                        lastSignalBar := bar_index
+                        if f.tag == "REV"
+                            lastRevBar   := bar_index
+                        else if f.tag == "BOS"
+                            lastContBar  := bar_index
+                        else
+                            lastRtestBar := bar_index
+
+// ── MACRO FVG ENTRY ──────────────────────────────────────────────────────────
+macroEnvOK = activeSession and not shockFrozen
+
+if macroEnvOK and structBull and (bar_index - lastMacroBar) >= cdMacro
+    if array.size(macroPool) > 0
+        for i = array.size(macroPool)-1 to 0
+            mf = array.get(macroPool, i)
+            if mf.alive and mf.isBull and bar_index > mf.bar + 1 and not macroFired and not buyFired
+                entryTop = mf.h
+                entryBot = mf.l + (mf.h - mf.l) * (1.0 - fvgDep)
+                if low <= entryTop and close >= mf.l and close >= entryBot
+                    sl = not na(swWickL) ? swWickL - atr*slBuf : mf.l - atr*slBuf
+                    if sl < close
+                        lastSetup      := "MACRO"
+                        lastMacroType  := mf.mType
+                        lastMacroBull  := true
+                        lastEntry      := close
+                        lastSL         := sl
+                        lastFvgH       := mf.h
+                        lastFvgL       := mf.l
+                        lastWasBuy     := true
+                        mf.alive       := false
+                        macroFired     := true
+                        lastMacroBar   := bar_index
+                        lastSignalBar  := bar_index
+
+if macroEnvOK and structBear and (bar_index - lastMacroBar) >= cdMacro
+    if array.size(macroPool) > 0
+        for i = array.size(macroPool)-1 to 0
+            mf = array.get(macroPool, i)
+            if mf.alive and not mf.isBull and bar_index > mf.bar + 1 and not macroFired and not sellFired
+                entryBot = mf.l
+                entryTop = mf.h - (mf.h - mf.l) * (1.0 - fvgDep)
+                if high >= entryBot and close <= mf.h and close <= entryTop
+                    sl = not na(swWickH) ? swWickH + atr*slBuf : mf.h + atr*slBuf
+                    if sl > close
+                        lastSetup      := "MACRO"
+                        lastMacroType  := mf.mType
+                        lastMacroBull  := false
+                        lastEntry      := close
+                        lastSL         := sl
+                        lastFvgH       := mf.h
+                        lastFvgL       := mf.l
+                        lastWasBuy     := false
+                        mf.alive       := false
+                        macroFired     := true
+                        lastMacroBar   := bar_index
+                        lastSignalBar  := bar_index
+
+// Flush structure
+if buyFired or (macroFired and lastMacroBull)
+    chBull  := false
+    bosBull := false
+if sellFired or (macroFired and not lastMacroBull)
+    chBear  := false
+    bosBear := false
+
+// ── TRADE HEALTH TRACKING ────────────────────────────────────────────────────
+// Open a trade record when a signal fires
+anySigFired = buyFired or sellFired or macroFired
+if anySigFired
+    inTrade      := true
+    tradeBull    := buyFired or (macroFired and lastMacroBull)
+    tradeEntry   := lastEntry
+    tradeSL      := lastSL
+    tradeBar     := bar_index
+    tradeHighest := close
+    tradeLow     := close
+
+// Update trade tracking
+if inTrade
+    tradeHighest := math.max(tradeHighest, close)
+    tradeLow     := math.min(tradeLow,     close)
+    // Close trade if SL hit
+    if tradeBull  and low  <= tradeSL
+        inTrade := false
+    if not tradeBull and high >= tradeSL
+        inTrade := false
+
+// ── TRADE HEALTH WARNINGS ────────────────────────────────────────────────────
+// Only show when in a trade and health is toggled on
+timeStale      = false
+structShift    = false
+oppSweep       = false
+
+if inTrade and showHealth
+    barsInTrade = bar_index - tradeBar
+
+    // 1. TIME STOP — no progress after N bars
+    noProgress = tradeBull  ? (tradeHighest <= tradeEntry and barsInTrade >= timeStop) :
+                              (tradeLow     >= tradeEntry and barsInTrade >= timeStop)
+    if noProgress
+        timeStale := true
+
+    // 2. STRUCTURE SHIFT — new swing forms against trade
+    newSwingAgainst = tradeBull  ? (not na(sl15) and sl15 < tradeEntry) :
+                                   (not na(sh15) and sh15 > tradeEntry)
+    if newSwingAgainst
+        structShift := true
+
+    // 3. OPPOSITE SWEEP — liquidity swept against trade direction
+    if tradeBull  and sweep15Bear
+        oppSweep := true
+    if not tradeBull and sweep15Bull
+        oppSweep := true
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. TP CALCULATION + MINIMUM R CHECK
+// ─────────────────────────────────────────────────────────────────────────────
+anyBuy  = buyFired or (macroFired and lastMacroBull)
+anySell = sellFired or (macroFired and not lastMacroBull)
+
+// TP1 = nearest EQH/EQL or 4H level
+// TP2 = 15m swing level
+tpA = anyBuy  ? (eqHOK and eqHLvl > close ? eqHLvl :
+                 not na(h4sh1) and h4sh1 > close ? h4sh1 : na) :
+      anySell ? (eqLOK and eqLLvl < close ? eqLLvl :
+                 not na(h4sl1) and h4sl1 < close ? h4sl1 : na) : na
+
+tpB = anyBuy  ? (not na(s15h1) and s15h1 > close ? s15h1 : na) :
+      anySell ? (not na(s15l1) and s15l1 < close ? s15l1 : na) : na
+
+// Also compute fixed 2R target
+slDistNow  = math.abs(lastEntry - lastSL)
+tp2RLevel  = anyBuy  ? lastEntry + slDistNow * rrTarget :
+             anySell ? lastEntry - slDistNow * rrTarget : na
+
+// Best TP — use whichever of tpA or 2R is closer
+bestTP = anyBuy  ? (not na(tpA) and tpA < tp2RLevel ? tpA : tp2RLevel) :
+         anySell ? (not na(tpA) and tpA > tp2RLevel ? tpA : tp2RLevel) : tp2RLevel
+
+tpDist  = not na(bestTP) ? math.abs(bestTP - lastEntry) : 0.0
+slDist  = slDistNow
+rrActual = slDist > 0 ? tpDist / slDist : 0.0
+
+// Minimum R flag
+lowR = rrActual < minR
+
+if (anyBuy or anySell) and showTP
+    if not na(tpA)
+        line.new(bar_index, tpA, bar_index+40, tpA,
+             color=color.new(color.yellow,20), style=line.style_dashed, width=2)
+        label.new(bar_index+40, tpA, "TP1",
+             style=label.style_label_left, color=color.new(color.black,60),
+             textcolor=color.yellow, size=size.tiny)
+    if not na(tpB)
+        line.new(bar_index, tpB, bar_index+40, tpB,
+             color=color.new(color.white,50), style=line.style_dotted, width=1)
+        label.new(bar_index+40, tpB, "TP2",
+             style=label.style_label_left, color=color.new(color.black,60),
+             textcolor=color.gray, size=size.tiny)
+    if not na(tp2RLevel)
+        line.new(bar_index, tp2RLevel, bar_index+40, tp2RLevel,
+             color=color.new(color.green,30), style=line.style_solid, width=1)
+        label.new(bar_index+40, tp2RLevel, str.tostring(rrTarget, "#.#") + "R",
+             style=label.style_label_left, color=color.new(color.black,60),
+             textcolor=color.green, size=size.tiny)
+    line.new(bar_index, lastSL, bar_index+40, lastSL,
+         color=color.new(color.red,20), style=line.style_solid, width=1)
+    label.new(bar_index+40, lastSL, "SL",
+         style=label.style_label_left, color=color.new(color.black,60),
+         textcolor=color.red, size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. SIGNAL VISUALS
+// ─────────────────────────────────────────────────────────────────────────────
+setupShort = lastSetup == "REVERSAL"     ? "REV"   :
+             lastSetup == "CONTINUATION" ? "CONT"  :
+             lastSetup == "RETEST"       ? "RTEST" :
+             lastSetup == "MACRO"        ? "MACRO" : ""
+
+sigColor = lastSetup == "REVERSAL"     ? color.lime   :
+           lastSetup == "CONTINUATION" ? color.aqua   :
+           lastSetup == "RETEST"       ? color.yellow :
+           lastSetup == "MACRO"        ? color.orange : color.gray
+
+counterTag = counterBull and buyFired  ? " ⚠CT" :
+             counterBear and sellFired ? " ⚠CT" : ""
+
+// Strength score at signal time
+isEqSwept  = (anyBuy  and eqLOK and not na(eqLLvl) and eqLLvl < lastEntry) or
+             (anySell and eqHOK and not na(eqHLvl) and eqHLvl > lastEntry)
+isChochSig = anyBuy ? chBull : chBear
+
+[sigScore, sigGrade, sigStars] = calcStrength(
+     lastSetup, anyBuy, tpDist, slDist, isChochSig, isEqSwept)
+
+// Low R override on grade
+displayGrade = lowR ? "LOW R" : sigGrade
+displayStars = lowR ? "—"     : sigStars
+gradeColor   = sigGrade == "A" ? color.lime  :
+               sigGrade == "B" ? color.yellow :
+               sigGrade == "C" ? color.orange : color.red
+gradeColor  := lowR ? color.gray : gradeColor
+
+// Standard dots
+plotshape(buyFired,  title="Buy Dot",
+     location=location.belowbar, style=shape.circle, size=size.tiny, color=color.lime)
+plotshape(sellFired, title="Sell Dot",
+     location=location.abovebar, style=shape.circle, size=size.tiny, color=color.red)
+
+// Macro dots
+plotshape(macroFired and lastMacroBull,      title="Macro Buy",
+     location=location.belowbar, style=shape.diamond, size=size.small, color=color.orange)
+plotshape(macroFired and not lastMacroBull,  title="Macro Sell",
+     location=location.abovebar, style=shape.diamond, size=size.small, color=color.orange)
+
+// Standard buy label
+if buyFired
+    rrStr = "  " + str.tostring(math.round(rrActual,1)) + "R"
+    label.new(bar_index, low - atr*1.5,
+         "▲ " + setupShort + counterTag + rrStr + "\nSL " +
+         str.tostring(math.round(lastSL,2)) + " " + sessName +
+         "\n" + displayStars + "  " + displayGrade,
+         style=label.style_label_up,
+         color=color.new(sigColor,10),
+         textcolor=color.black, size=size.small)
+
+// Standard sell label
+if sellFired
+    rrStr = "  " + str.tostring(math.round(rrActual,1)) + "R"
+    label.new(bar_index, high + atr*1.5,
+         "▼ " + setupShort + counterTag + rrStr + "\nSL " +
+         str.tostring(math.round(lastSL,2)) + " " + sessName +
+         "\n" + displayStars + "  " + displayGrade,
+         style=label.style_label_down,
+         color=color.new(sigColor,10),
+         textcolor=color.black, size=size.small)
+
+// Macro label
+if macroFired
+    macroDir   = lastMacroBull ? "▲ BUY" : "▼ SELL"
+    macroStyle = lastMacroBull ? label.style_label_up : label.style_label_down
+    macroY     = lastMacroBull ? low - atr*2.2 : high + atr*2.2
+    macroType  = lastMacroType == "SWEEP" ? " [SWEEP]" : " [CONT]"
+    rrStr      = "  " + str.tostring(math.round(rrActual,1)) + "R"
+    label.new(bar_index, macroY,
+         "◆ MACRO " + macroDir + macroType + rrStr + "\nSL " +
+         str.tostring(math.round(lastSL,2)) + " " + sessName +
+         "\n" + displayStars + "  " + displayGrade,
+         style=macroStyle,
+         color=color.new(color.orange,5),
+         textcolor=color.black, size=size.normal)
+
+// ── TRADE HEALTH WARNING LABELS ──────────────────────────────────────────────
+if timeStale and showHealth
+    label.new(bar_index, high + atr*2.0,
+         "⏱ STALE — consider exit",
+         style=label.style_label_down,
+         color=color.new(color.black,0),
+         textcolor=color.orange, size=size.small)
+
+if structShift and showHealth
+    label.new(bar_index, high + atr*2.0,
+         "⚠ STRUCTURE SHIFT — review",
+         style=label.style_label_down,
+         color=color.new(color.black,0),
+         textcolor=color.red, size=size.small)
+
+if oppSweep and showHealth
+    label.new(bar_index, high + atr*2.0,
+         "⚠ OPPOSITE SWEEP — exit?",
+         style=label.style_label_down,
+         color=color.new(color.black,0),
+         textcolor=color.red, size=size.small)
+
+// Volatility labels
+if not volNormal
+    label.new(bar_index, high + atr*3.0, "⚡ HIGH VOL",
+         style=label.style_label_down, color=color.new(color.black,0),
+         textcolor=color.orange, size=size.small)
+
+if shockFrozen
+    label.new(bar_index, high + atr*3.0, "⚡ FROZEN",
+         style=label.style_label_down, color=color.new(color.black,0),
+         textcolor=color.red, size=size.small)
+
+if postShock
+    label.new(bar_index, high + atr*3.0, "◉ POST-SHOCK",
+         style=label.style_label_down, color=color.new(color.black,0),
+         textcolor=color.yellow, size=size.small)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. WEBHOOK
+// ─────────────────────────────────────────────────────────────────────────────
+buildPayload(dir) =>
+    ctr = (counterBull and buyFired) or (counterBear and sellFired) ? "true" : "false"
+    mtp = lastMacroType != "" ? lastMacroType : "NA"
+    p01 = '{"symbol":"'      + syminfo.ticker                        + '",'
+    p02 = '"timeframe":"'    + timeframe.period                      + '",'
+    p03 = '"direction":"'    + dir                                   + '",'
+    p04 = '"setup":"'        + lastSetup                             + '",'
+    p05 = '"macro_type":"'   + mtp                                   + '",'
+    p06 = '"session":"'      + sessName                              + '",'
+    p07 = '"grade":"'        + sigGrade                              + '",'
+    p08 = '"rr_available":'  + str.tostring(math.round(rrActual,2))  + ','
+    p09 = '"entry":'         + str.tostring(math.round(lastEntry,5)) + ','
+    p10 = '"sl":'            + str.tostring(math.round(lastSL,5))    + ','
+    p11 = '"tp1":'           + (not na(tpA) ? str.tostring(math.round(tpA,5)) : "null") + ','
+    p12 = '"tp2r":'          + (not na(tp2RLevel) ? str.tostring(math.round(tp2RLevel,5)) : "null") + ','
+    p13 = '"fvg_high":'      + str.tostring(math.round(lastFvgH,5))  + ','
+    p14 = '"fvg_low":'       + str.tostring(math.round(lastFvgL,5))  + ','
+    p15 = '"4h_context":"'   + h4Context                             + '",'
+    p16 = '"counter_trend":' + ctr                                   + ','
+    p17 = '"vol_state":"'    + volState                              + '",'
+    p18 = '"prime_session":' + (primeSess ? "true" : "false")        + ','
+    p19 = '"atr":'           + str.tostring(math.round(atr,5))       + ','
+    p20 = '"bar_time":"'     + str.tostring(time)                    + '",'
+    p21 = '"secret":"'       + wSecret                               + '"}'
+    p01+p02+p03+p04+p05+p06+p07+p08+p09+p10+p11+p12+p13+p14+p15+p16+p17+p18+p19+p20+p21
+
+if buyFired or (macroFired and lastMacroBull)
+    alert(buildPayload("BUY"),  alert.freq_once_per_bar_close)
+if sellFired or (macroFired and not lastMacroBull)
+    alert(buildPayload("SELL"), alert.freq_once_per_bar_close)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. STATUS TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+var table t = table.new(position.top_right, 2, 17, border_width=1)
+
+if barstate.islast
+    tc = color.new(color.black,50)
+    ts = size.tiny
+
+    table.cell(t,0,0,  "Atlas SMC v7",  text_color=color.yellow, bgcolor=tc, text_size=size.small, text_halign=text.align_left)
+    table.cell(t,1,0,  syminfo.ticker,  text_color=color.white,  bgcolor=tc, text_size=size.small)
+
+    table.cell(t,0,1,  "Session",       text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,1,  sessName,
+         text_color=isDeadZone?color.red:primeSess?color.lime:color.yellow, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,2,  "Volatility",    text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,2,  volState,
+         text_color=volNormal and not shockFrozen?color.lime:color.orange, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,3,  "Range",         text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,3,  isRanging?"RANGING":"DIRECTIONAL",
+         text_color=isRanging?color.orange:color.lime, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,4,  "15m Sweep",     text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,4,  sw15L?"↑ BULL":sw15H?"↓ BEAR":"—",
+         text_color=sw15L?color.lime:sw15H?color.red:color.gray, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,5,  "15m CHoCH",     text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,5,  chBull?"↑ BULL":chBear?"↓ BEAR":"—",
+         text_color=chBull?color.lime:chBear?color.red:color.gray, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,6,  "15m BOS",       text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,6,  bosBull?"↑ BULL":bosBear?"↓ BEAR":"—",
+         text_color=bosBull?color.aqua:bosBear?color.orange:color.gray, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,7,  "Structure",     text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,7,  structBull?"LONG ✓":structBear?"SHORT ✓":isRanging?"RANGING":"WAIT",
+         text_color=structBull?color.lime:structBear?color.red:color.orange, bgcolor=tc, text_size=ts)
+
+    bullAlive = 0
+    bullRev   = 0
+    bullBos   = 0
+    if array.size(bullPool) > 0
+        for i = 0 to array.size(bullPool)-1
+            f = array.get(bullPool,i)
+            if f.alive
+                bullAlive += 1
+                if f.tag == "REV"
+                    bullRev += 1
+                else if f.tag == "BOS"
+                    bullBos += 1
+
+    bearAlive = 0
+    bearRev   = 0
+    bearBos   = 0
+    if array.size(bearPool) > 0
+        for i = 0 to array.size(bearPool)-1
+            f = array.get(bearPool,i)
+            if f.alive
+                bearAlive += 1
+                if f.tag == "REV"
+                    bearRev += 1
+                else if f.tag == "BOS"
+                    bearBos += 1
+
+    macroAlive = 0
+    if array.size(macroPool) > 0
+        for i = 0 to array.size(macroPool)-1
+            if array.get(macroPool,i).alive
+                macroAlive += 1
+
+    table.cell(t,0,8,  "Bull FVGs",     text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,8,  str.tostring(bullAlive)+"  R:"+str.tostring(bullRev)+" B:"+str.tostring(bullBos),
+         text_color=bullAlive>0?color.lime:color.gray, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,9,  "Bear FVGs",     text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,9,  str.tostring(bearAlive)+"  R:"+str.tostring(bearRev)+" B:"+str.tostring(bearBos),
+         text_color=bearAlive>0?color.red:color.gray, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,10, "Macro FVGs",    text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,10, str.tostring(macroAlive)+" live",
+         text_color=macroAlive>0?color.orange:color.gray, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,11, "4H Context",    text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,11, h4Context,
+         text_color=h4_bull?color.lime:color.red, bgcolor=tc, text_size=ts)
+
+    h4shStr = not na(h4sh1) ? str.tostring(math.round(h4sh1,2)) : "—"
+    h4slStr = not na(h4sl1) ? str.tostring(math.round(h4sl1,2)) : "—"
+    table.cell(t,0,12, "4H H / L",      text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,12, h4shStr + " / " + h4slStr,
+         text_color=color.white, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,13, "15m EQH/EQL",  text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,13, (eqHOK?str.tostring(math.round(eqHLvl,2)):"—")+" / "+(eqLOK?str.tostring(math.round(eqLLvl,2)):"—"),
+         text_color=color.yellow, bgcolor=tc, text_size=ts)
+
+    table.cell(t,0,14, "Last Signal",   text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,14, lastSetup != "" ? lastSetup + (lastSetup=="MACRO" ? " "+lastMacroType : "") : "—",
+         text_color=lastSetup=="MACRO"?color.orange:color.yellow, bgcolor=tc, text_size=ts)
+
+    // Trade health row
+    healthStr = not inTrade        ? "—" : oppSweep ? "⚠ OPP SWEEP" : structShift ? "⚠ STRUCT SHIFT" : timeStale ? "⏱ STALE" : "✓ OK"
+    healthCol = not inTrade ? color.gray : oppSweep or structShift ? color.red : timeStale ? color.orange : color.lime
+
+    table.cell(t,0,15, "Trade Health",  text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,15, healthStr,       text_color=healthCol,  bgcolor=tc, text_size=ts)
+
+    // Last grade row
+    table.cell(t,0,16, "Last Grade",    text_color=color.gray, bgcolor=tc, text_size=ts, text_halign=text.align_left)
+    table.cell(t,1,16, lastSetup != "" ? sigStars + "  " + sigGrade : "—",
+         text_color=gradeColor, bgcolor=tc, text_size=ts)
