@@ -1,0 +1,46 @@
+//@version=6
+strategy("Range Master OG - Stable Edition", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=50)
+
+// ─── INPUTS ───
+bb_len    = input.int(20, "BB Length")
+bb_mult   = input.float(2.5, "BB StdDev (The Sweet Spot)")
+wick_per  = input.float(30.0, "Min Wick %")
+sl_pct    = input.float(0.5, "Stop Loss %")
+
+// ─── GLOBAL CALCULATIONS (Stable Scope) ───
+[basis, upper, lower] = ta.bb(close, bb_len, bb_mult)
+cross_basis = ta.cross(close, basis) // Pre-calculated for memory
+
+// ─── REJECTION LOGIC ───
+candle_range = high - low
+upper_wick   = high - math.max(open, close)
+lower_wick   = math.min(open, close) - low
+
+short_rej = high >= upper and candle_range > 0 and (upper_wick / candle_range) * 100 > wick_per
+long_rej  = low <= lower and candle_range > 0 and (lower_wick / candle_range) * 100 > wick_per
+
+// ─── EXECUTION ───
+if (long_rej and strategy.position_size == 0)
+    strategy.entry("Long", strategy.long, comment="OG Wick Rej")
+
+if (short_rej and strategy.position_size == 0)
+    strategy.entry("Short", strategy.short, comment="OG Wick Rej")
+
+// ─── THE "OG" EXIT (Clean & Simple) ───
+if (strategy.position_size > 0 and cross_basis)
+    strategy.close("Long", comment="Mean Hit")
+
+if (strategy.position_size < 0 and cross_basis)
+    strategy.close("Short", comment="Mean Hit")
+
+// Static Emergency SL
+if (strategy.position_size != 0)
+    float sl_val = strategy.position_size > 0 ? 
+       strategy.position_avg_price * (1 - sl_pct/100) : 
+       strategy.position_avg_price * (1 + sl_pct/100)
+    strategy.exit("SL", stop=sl_val)
+
+// ─── VISUALS ───
+plot(basis, color=color.new(color.gray, 50))
+plot(upper, color=color.red, linewidth=2)
+plot(lower, color=color.lime, linewidth=2)
