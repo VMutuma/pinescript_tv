@@ -1,38 +1,51 @@
-//@version=5
-strategy("Forex Range Master - Structural Fix", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=50)
+//@version=6
+strategy("Range Master OG - Static Sniper", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=50)
 
 // ─── INPUTS ───
-bb_len   = input.int(20, "BB Length")
-bb_mult  = input.float(2.2, "StdDev (Tighten for higher PnL)")
-min_pipe = input.float(5.0, "Min Bandwidth (Pips)", tooltip="Avoids the 'Squeeze' trap")
+bb_len    = input.int(20, "BB Length")
+bb_mult   = input.float(2.5, "BB StdDev")
+wick_per  = input.float(25.0, "Min Wick %") 
+sl_pct    = input.float(1.0, "Stop Loss %") 
 
-// ─── INDICATORS ───
+// ─── GLOBAL CALCULATIONS ───
 [basis, upper, lower] = ta.bb(close, bb_len, bb_mult)
-bandwidth = (upper - lower) / syminfo.mintick / 10 // Convert to Pips
+cross_basis = ta.cross(close, basis) 
 
-// Basis Slope (Angle of the Mean)
-slope = basis - basis[1]
+// ─── REJECTION LOGIC ───
+candle_range = high - low
+upper_wick   = high - math.max(open, close)
+lower_wick   = math.min(open, close) - low
+curr_wick_up = candle_range > 0 ? (upper_wick / candle_range) * 100 : 0
+curr_wick_dn = candle_range > 0 ? (lower_wick / candle_range) * 100 : 0
 
-// ─── REFINED ENTRY LOGIC ───
-// Long: Price is at the lower band + Basis is NOT crashing down + Bands aren't squeezed
-long_entry  = ta.crossover(close, lower) and slope > -0.0001 and bandwidth > min_pipe
-// Short: Price is at the upper band + Basis is NOT surging up + Bands aren't squeezed
-short_entry = ta.crossunder(close, upper) and slope < 0.0001 and bandwidth > min_pipe
+short_rej = high >= upper and candle_range > 0 and curr_wick_up > wick_per
+long_rej  = low <= lower and candle_range > 0 and curr_wick_dn > wick_per
 
 // ─── EXECUTION ───
-if (long_entry and strategy.position_size == 0)
-    strategy.entry("Long", strategy.long)
-
-if (short_entry and strategy.position_size == 0)
-    strategy.entry("Short", strategy.short)
-
-// ─── DYNAMIC EXIT ───
-// Exit at Mean (Basis) or Opposite Band for "Big Winners"
-if (strategy.position_size > 0 and ta.crossover(close, basis))
+if (long_rej and strategy.position_size == 0)
+    strategy.entry("Long", strategy.long, comment="Wick Rej")
+if (short_rej and strategy.position_size == 0)
+    strategy.entry("Short", strategy.short, comment="Wick Rej")
+if (strategy.position_size > 0 and cross_basis)
     strategy.close("Long", comment="Mean Hit")
-
-if (strategy.position_size < 0 and ta.crossunder(close, basis))
+if (strategy.position_size < 0 and cross_basis)
     strategy.close("Short", comment="Mean Hit")
 
-// Hard Stop Loss based on volatility
-strategy.exit("SL", stop=strategy.position_avg_price * (strategy.position_size > 0 ? 0.998 : 1.002))
+// ─── VISUALS ───
+bgcolor(long_rej ? color.new(color.lime, 85) : na)
+bgcolor(short_rej ? color.new(color.red, 85) : na)
+
+plot(basis, color=color.new(color.gray, 50))
+plot(upper, color=color.red, linewidth=2)
+plot(lower, color=color.lime, linewidth=2)
+
+// ─── THE STATIC FLIGHT MANUAL (Bottom Right) ───
+var table manual = table.new(position.bottom_right, 1, 6, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.gray)
+
+if barstate.islast
+    table.cell(manual, 0, 0, "⚠️ SNIPER RULES ⚠️", text_color=color.yellow, text_size=size.small)
+    table.cell(manual, 0, 1, "1. Candle MUST be Closed", text_color=color.white, text_halign=text.align_left)
+    table.cell(manual, 0, 2, "2. Wick MUST be > 25%", text_color=color.white, text_halign=text.align_left)
+    table.cell(manual, 0, 3, "3. Body MUST be Inside Band", text_color=color.white, text_halign=text.align_left)
+    table.cell(manual, 0, 4, "4. NO 'Hugging' the Bands", text_color=color.white, text_halign=text.align_left)
+    table.cell(manual, 0, 5, "5. NO High-Impact News", text_color=color.white, text_halign=text.align_left)
