@@ -1,0 +1,180 @@
+//@version=6
+strategy("Dynamic MTF Metals Sniper - Production UI", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, currency=currency.USD, max_bars_back=5000)
+
+// ==========================================
+// 1. INPUTS & RESTORED DYNAMIC ARCHITECTURE
+// ==========================================
+htfKeltnerLen  = input.int(60, title="1H Baseline Lookback (Hours Equivalent)", group="Macro Settings")
+htfAtrMult     = input.float(2.0, title="Zone Width (1H ATR Multiplier)", group="Macro Settings")
+
+// Continuation Detection Settings
+macroLookback   = input.int(48, title="Macro Structural Lookback (Hours)", group="Continuation Engine Filter")
+lockoutDuration = input.int(240, title="Continuation Lockout Period (Minutes)", group="Continuation Engine Filter")
+
+pivotLength     = input.int(15, title="1M Local Pivot Strength", group="Execution Settings")
+allowedSession = input.session("0700-1700", title="Active Volatility Window (UTC)", group="Execution Settings")
+
+volLength      = input.int(20, title="Volume MA Length", group="Volume Confirmation")
+volMultiplier  = input.float(1.1, title="Volume Spike Threshold", group="Volume Confirmation")
+
+atrLength      = input.int(14, title="1M ATR Length", group="Risk Management")
+atrMultSL      = input.float(2.5, title="SL ATR Multiplier", group="Risk Management")
+riskReward     = input.float(2.5, title="Target Risk-to-Reward Ratio", group="Risk Management")
+useBreakeven   = input.bool(false, title="Enable Auto-Breakeven at 1:1 R:R", group="Risk Management")
+
+// Visual Customization Filters (With Opacity Controls)
+showChannels   = input.bool(true, title="Show 1H Volatility Bands", group="UI Cleanliness Settings")
+showPivots     = input.bool(true, title="Show Liquidity Levels", group="UI Cleanliness Settings")
+showTargets    = input.bool(true, title="Show Live SL/TP Target Lines", group="UI Cleanliness Settings")
+showDashboard  = input.bool(true, title="Show Real-Time Lockdown HUD", group="UI Cleanliness Settings")
+
+// ==========================================
+// 2. TIMING & EMULATED HTF VOLATILITY CHANNELS
+// ==========================================
+inSession = not na(time(timeframe.period, allowedSession))
+
+avgVolume = ta.sma(volume, volLength)
+isInstitutionalVolume = volume > (avgVolume * volMultiplier)
+
+nativeBaselineLen = htfKeltnerLen * 60
+htfBasis = ta.ema(close, nativeBaselineLen)
+htfAtr   = ta.atr(nativeBaselineLen)
+
+premiumThreshold  = htfBasis + (htfAtr * htfAtrMult)
+discountThreshold = htfBasis - (htfAtr * htfAtrMult)
+
+isInsidePremium  = close > premiumThreshold
+isInsideDiscount = close < discountThreshold
+
+// UI FIX: Softened opacities (75%-85% transparency) to avoid charting clutter
+plot(showChannels ? premiumThreshold : na, color=color.new(#FF5252, 75), linewidth=1, title="1H Dynamic Premium Zone Line")
+plot(showChannels ? htfBasis : na, color=color.new(#787B86, 85), linewidth=1, title="1H Equilibrium Baseline")
+plot(showChannels ? discountThreshold : na, color=color.new(#00E676, 75), linewidth=1, title="1H Dynamic Discount Zone Line")
+
+// ==========================================
+// 3. PREVENTATIVE CONTINUATION DETECTOR
+// ==========================================
+nativeMacroBars = macroLookback * 60
+macroFloor   = ta.lowest(low, nativeMacroBars)[1]
+macroCeiling = ta.highest(high, nativeMacroBars)[1]
+
+atr = ta.atr(atrLength)
+nearMacroFloor   = close <= macroFloor + (atr * 1.5)
+nearMacroCeiling = close >= macroCeiling - (atr * 1.5)
+
+var int longLockoutTimer = 0
+var int shortLockoutTimer = 0
+
+if (ta.crossunder(close, macroFloor) or nearMacroFloor)
+    longLockoutTimer := lockoutDuration
+
+if (ta.crossover(close, macroCeiling) or nearMacroCeiling)
+    shortLockoutTimer := lockoutDuration
+
+if (longLockoutTimer > 0)
+    longLockoutTimer := longLockoutTimer - 1
+
+if (shortLockoutTimer > 0)
+    shortLockoutTimer := shortLockoutTimer - 1
+
+longAllowed  = longLockoutTimer == 0 and not nearMacroFloor
+shortAllowed = shortLockoutTimer == 0 and not nearMacroCeiling
+
+// UI FIX: Muted orange tones (70% transparency) for boundaries so execution signals pop out cleanly
+plot(showChannels ? macroFloor : na, color=color.new(#FF9800, 70), style=plot.style_circles, linewidth=1, title="48H Macro Support Floor")
+plot(showChannels ? macroCeiling : na, color=color.new(#FF9800, 70), style=plot.style_circles, linewidth=1, title="48H Macro Resistance Ceiling")
+
+// ==========================================
+// 4. PRECISION 1-MINUTE LIQUIDITY POOLS
+// ==========================================
+pHi = ta.pivothigh(high, pivotLength, pivotLength)
+pLo = ta.pivotlow(low, pivotLength, pivotLength)
+
+var float activeSupplyLevel = na
+var float activeDemandLevel = na
+
+if not na(pHi)
+    activeSupplyLevel := high[pivotLength]
+if not na(pLo)
+    activeDemandLevel := low[pivotLength]
+
+// UI FIX: Muted step liquidity lines down to 65% opacity
+plot(showPivots ? activeSupplyLevel : na, color=color.new(#D11A2A, 65), style=plot.style_linebr, linewidth=2, title="Active Supply High")
+plot(showPivots ? activeDemandLevel : na, color=color.new(#00B1B0, 65), style=plot.style_linebr, linewidth=2, title="Active Demand Low")
+
+// ==========================================
+// 5. MEAN-REVERSION TRIGGER MATRIX
+// ==========================================
+longTrigger  = inSession and isInsideDiscount and low < activeDemandLevel and close > activeDemandLevel and isInstitutionalVolume and longAllowed and strategy.position_size == 0
+shortTrigger = inSession and isInsidePremium and high > activeSupplyLevel and close < activeSupplyLevel and isInstitutionalVolume and shortAllowed and strategy.position_size == 0
+
+// ==========================================
+// 6. TRADE EXECUTION & RISK ENGINE
+// ==========================================
+var float entryPrice = na
+var float stopLossPrice = na
+var float takeProfitPrice = na
+var bool breakevenTriggered = false
+
+if (longTrigger)
+    entryPrice := close
+    stopLossPrice := math.min(low, close - (atr * atrMultSL))
+    takeProfitPrice := close + ((close - stopLossPrice) * riskReward)
+    breakevenTriggered := false
+    strategy.entry("Sniper Long", strategy.long)
+
+if (shortTrigger)
+    entryPrice := close
+    stopLossPrice := math.max(high, close + (atr * atrMultSL))
+    takeProfitPrice := close - ((stopLossPrice - close) * riskReward)
+    breakevenTriggered := false
+    strategy.entry("Sniper Short", strategy.short)
+
+if (strategy.position_size > 0)
+    riskAmount = entryPrice - stopLossPrice
+    if useBreakeven and not breakevenTriggered and (close >= entryPrice + riskAmount)
+        stopLossPrice := entryPrice
+        breakevenTriggered := true
+    strategy.exit("Exit Long", "Sniper Long", stop=stopLossPrice, limit=takeProfitPrice)
+
+if (strategy.position_size < 0)
+    riskAmount = stopLossPrice - entryPrice
+    if useBreakeven and not breakevenTriggered and (close <= entryPrice - riskAmount)
+        stopLossPrice := entryPrice
+        breakevenTriggered := true
+    strategy.exit("Exit Short", "Sniper Short", stop=stopLossPrice, limit=takeProfitPrice)
+
+// ==========================================
+// 7. RISK BRACKETS & VISUAL HUD MANAGEMENT
+// ==========================================
+// Keep active market lines ultra-vibrant so your risk parameters stand out instantly
+plot(showTargets and strategy.position_size != 0 ? stopLossPrice : na, color=#FF0055, style=plot.style_linebr, linewidth=3, title="Live Trade Active Stop Loss")
+plot(showTargets and strategy.position_size != 0 ? takeProfitPrice : na, color=#00FFCC, style=plot.style_linebr, linewidth=3, title="Live Trade Active Take Profit")
+
+plotshape(longTrigger, title="Buy Signal", location=location.belowbar, color=#00FF00, style=shape.triangleup, size=size.small)
+plotshape(shortTrigger, title="Sell Signal", location=location.abovebar, color=#FF0000, style=shape.triangledown, size=size.small)
+
+// ==========================================
+// 8. REAL-TIME SYSTEM LOCKDOWN DASHBOARD
+// ==========================================
+var table hud = table.new(position.top_right, 2, 3, bgcolor=color.new(#131722, 10), border_color=#434651, border_width=1)
+if barstate.islast and showDashboard
+    // Header
+    table.cell(hud, 0, 0, "ENGINE DIRECTION", text_color=color.white, text_size=size.small, bgcolor=#1e222d)
+    table.cell(hud, 1, 0, "CURRENT PROTECTION STATE", text_color=color.white, text_size=size.small, bgcolor=#1e222d)
+    
+    // Longs Protection Monitor
+    table.cell(hud, 0, 1, "LONG SNIPER ENGINE", text_color=#b2b5be, text_size=size.small, bgcolor=#131722)
+    if not longAllowed
+        msg = "LOCKDOWN ACTIVE (" + str.tostring(longLockoutTimer) + "m remaining)"
+        table.cell(hud, 1, 1, msg, text_color=#ff5252, text_size=size.small, bgcolor=color.new(#ff5252, 85))
+    else
+        table.cell(hud, 1, 1, "FREE TO EXECUTE", text_color=#00e676, text_size=size.small, bgcolor=color.new(#00e676, 85))
+        
+    // Shorts Protection Monitor
+    table.cell(hud, 0, 2, "SHORT SNIPER ENGINE", text_color=#b2b5be, text_size=size.small, bgcolor=#131722)
+    if not shortAllowed
+        msg = "LOCKDOWN ACTIVE (" + str.tostring(shortLockoutTimer) + "m remaining)"
+        table.cell(hud, 1, 2, msg, text_color=#ff5252, text_size=size.small, bgcolor=color.new(#ff5252, 85))
+    else
+        table.cell(hud, 1, 2, "FREE TO EXECUTE", text_color=#00e676, text_size=size.small, bgcolor=color.new(#00e676, 85))
