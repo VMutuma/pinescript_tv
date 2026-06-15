@@ -1,0 +1,209 @@
+//@version=6
+strategy("Metals Sniper - Production Matrix", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=20, currency=currency.USD, max_bars_back=5000)
+
+// ==========================================
+// 1. FRESH UNCACHED UI INPUTS
+// ==========================================
+mx_session_box   = input.session("0000-0700", title="Range Discovery Window (UTC)", group="Session Time Setup")
+mx_trade_window  = input.session("0700-1700", title="Active Execution Window (UTC)", group="Session Time Setup")
+
+// Engine Toggle Switches
+mx_use_scalp     = input.bool(true, title="Enable Inner-Range Scalping", group="Strategy Engines")
+mx_use_break     = input.bool(true, title="Enable Trend Continuation Breakouts", group="Strategy Engines")
+
+// Box Quality Filter Controls
+mx_use_box_filter = input.bool(true, title="Enable Box Quality Filter", group="Box Quality Filter")
+mx_filter_len     = input.int(5, title="Historical Box Baseline (Days)", group="Box Quality Filter")
+mx_max_mult       = input.float(1.5, title="Maximum Box Height Multiplier", group="Box Quality Filter")
+mx_min_mult       = input.float(0.5, title="Minimum Box Height Multiplier", group="Box Quality Filter")
+
+// Volume Filters
+mx_vol_len       = input.int(20, title="Volume MA Length", group="Volume Confirmation Engine")
+mx_vol_mult      = input.float(1.2, title="Volume Spike Threshold", group="Volume Confirmation Engine")
+
+// Advanced Protection & Risk Tuning
+mx_atr_len       = input.int(14, title="1M ATR Length", group="Advanced Risk Controls")
+mx_scalp_sl      = input.float(1.8, title="Scalp Stop Multiplier (Wider for Gold)", group="Advanced Risk Controls")
+mx_trend_sl      = input.float(3.0, title="Breakout Trailing Multiplier", group="Advanced Risk Controls")
+mx_fail_safe     = input.float(1.2, title="Hard Failure Circuit Breaker (1.2 = 120% of Box)", group="Advanced Risk Controls")
+mx_tp_pad        = input.float(0.10, title="Scalp Target Margin Padding", group="Advanced Risk Controls")
+
+// UI Visual Options
+mx_show_box      = input.bool(true, title="Draw Clean Session Boundaries", group="Visual Customization")
+
+// ==========================================
+// 2. DYNAMIC BOX BOUNDARY TRACKING & FILTER MATH
+// ==========================================
+inRangeSession = not na(time(timeframe.period, mx_session_box))
+inTradeSession = not na(time(timeframe.period, mx_trade_window))
+atr = ta.atr(mx_atr_len)
+// atr = request.security(syminfo.tickerid, "15", ta.atr(mx_atr_len), barmerge.gaps_off, barmerge.lookahead_off)
+
+var float boxMax = na
+var float boxMin = na
+var int longCount = 0
+var int shortCount = 0
+
+// Variables to capture completed historical box heights
+var float[] historicalBoxes = array.new_float(0)
+var float avgBoxHeight = na
+
+// Detect the exact bar where the session ends to store its final height
+sessionEnded = not inRangeSession and inRangeSession[1]
+
+if inRangeSession
+    if inRangeSession[1] == false
+        boxMax := high
+        boxMin := low
+        longCount := 0
+        shortCount := 0
+    else
+        boxMax := math.max(high, boxMax)
+        boxMin := math.min(low, boxMin)
+
+boxHeight = boxMax - boxMin
+
+// When the session ends, record its height into our memory array
+if sessionEnded and boxHeight > 0
+    array.push(historicalBoxes, boxHeight)
+    if array.size(historicalBoxes) > mx_filter_len
+        array.shift(historicalBoxes) // Keep only the last 'X' days of data
+
+// Calculate the rolling baseline height
+if array.size(historicalBoxes) > 0
+    float sum = 0.0
+    for i = 0 to array.size(historicalBoxes) - 1
+        sum := sum + array.get(historicalBoxes, i)
+    avgBoxHeight := sum / array.size(historicalBoxes)
+
+// Evaluate if today's box is valid based on historical data
+boxIsValid = true
+if mx_use_box_filter and not na(avgBoxHeight)
+    isTooGiant = boxHeight > (avgBoxHeight * mx_max_mult)
+    isTooTiny  = boxHeight < (avgBoxHeight * mx_min_mult)
+    boxIsValid := not isTooGiant and not isTooTiny
+
+// Clean Session Rendering
+plot(not inRangeSession and boxMax > 0 and mx_show_box ? boxMax : na, color=color.new(#FF5252, 30), linewidth=2, style=plot.style_linebr, title="Ceiling")
+plot(not inRangeSession and boxMin > 0 and mx_show_box ? boxMin : na, color=color.new(#00E676, 30), linewidth=2, style=plot.style_linebr, title="Floor")
+
+// ==========================================
+// 3. INSTITUTIONAL FILTERS
+// ==========================================
+avgVolume = ta.sma(volume, mx_vol_len)
+isInstitutional = volume > (avgVolume * mx_vol_mult)
+
+// Directional Confirmation (Candle closes back inside range dynamically)
+longWickRejection  = low <= boxMin and close > boxMin and close > open
+shortWickRejection = high >= boxMax and close < boxMax and close < open
+
+// ==========================================
+// 4. STRATEGY TRIGGER CORES (BOX FILTER INTEGRATED)
+// ==========================================
+rangeLong  = inTradeSession and mx_use_scalp and longWickRejection and isInstitutional and longCount < 1 and strategy.position_size == 0 and boxIsValid
+rangeShort = inTradeSession and mx_use_scalp and shortWickRejection and isInstitutional and shortCount < 1 and strategy.position_size == 0 and boxIsValid
+
+breakoutLong  = inTradeSession and mx_use_break and ta.crossover(close, boxMax) and isInstitutional and strategy.position_size == 0 and boxIsValid
+breakoutShort = inTradeSession and mx_use_break and ta.crossunder(close, boxMin) and isInstitutional and strategy.position_size == 0 and boxIsValid
+
+// ==========================================
+// 5. PROTECTION EXECUTION MATRIX
+// ==========================================
+var float stopLossPrice = na
+var float takeProfitPrice = na
+var float emergencyExitPrice = na
+var bool isBreakoutTrade = false
+
+// Persistent memory to freeze execution variables at the exact moment of entry
+var float entryAtr = na
+var float entryBoxHeight = na
+
+if (rangeLong)
+    isBreakoutTrade := false
+    longCount += 1
+    entryAtr := atr
+    entryBoxHeight := boxHeight
+    stopLossPrice := close - (entryAtr * mx_scalp_sl)
+    takeProfitPrice := boxMax - (entryBoxHeight * mx_tp_pad)
+    emergencyExitPrice := boxMin - (entryBoxHeight * mx_fail_safe)
+    strategy.entry("Scalp Long", strategy.long)
+
+if (rangeShort)
+    isBreakoutTrade := false
+    shortCount += 1
+    entryAtr := atr
+    entryBoxHeight := boxHeight
+    stopLossPrice := close + (entryAtr * mx_scalp_sl)
+    takeProfitPrice := boxMin + (entryBoxHeight * mx_tp_pad)
+    emergencyExitPrice := boxMax + (entryBoxHeight * mx_fail_safe)
+    strategy.entry("Scalp Short", strategy.short)
+
+if (breakoutLong)
+    isBreakoutTrade := true
+    entryAtr := atr
+    stopLossPrice := boxMax - (entryAtr * mx_trend_sl)
+    strategy.entry("Trend Long", strategy.long)
+
+if (breakoutShort)
+    isBreakoutTrade := true
+    entryAtr := atr
+    stopLossPrice := boxMin + (entryAtr * mx_trend_sl)
+    strategy.entry("Trend Short", strategy.short)
+
+// --- COMBINED RISK EXITS ---
+if (strategy.position_size > 0)
+    if isBreakoutTrade
+        // Trailing stop calculates relative to dynamic ATR tracking to protect trend runners
+        stopLossPrice := math.max(stopLossPrice, close - (atr * mx_trend_sl))
+        strategy.exit("Trend Exit L", "Trend Long", stop=stopLossPrice)
+    else
+        if close < emergencyExitPrice
+            strategy.close("Scalp Long", comment="Circuit Breaker")
+        else
+            strategy.exit("Scalp Exit L", "Scalp Long", stop=stopLossPrice, limit=takeProfitPrice)
+
+if (strategy.position_size < 0)
+    if isBreakoutTrade
+        stopLossPrice := math.min(stopLossPrice, close + (atr * mx_trend_sl))
+        strategy.exit("Trend Exit S", "Trend Short", stop=stopLossPrice)
+    else
+        if close > emergencyExitPrice
+            strategy.close("Scalp Short", comment="Circuit Breaker")
+        else
+            strategy.exit("Scalp Exit S", "Scalp Short", stop=stopLossPrice, limit=takeProfitPrice)
+
+// Reset frozen entry values when completely out of positions
+if (strategy.position_size == 0)
+    entryAtr := na
+    entryBoxHeight := na
+
+// ==========================================
+// 6. VISUALIZATION LABELS & SL/TP PLOTS
+// ==========================================
+plot(strategy.position_size != 0 ? stopLossPrice : na, title="Active Stop Loss Line", color=color.new(#FF1744, 0), linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size != 0 and not isBreakoutTrade ? takeProfitPrice : na, title="Active Take Profit Line", color=color.new(#00E676, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape(rangeLong, title="Scalp Long Entry", text="SCALP LONG", style=shape.labelup, location=location.belowbar, color=color.new(#00E676, 0), textcolor=color.black, size=size.small)
+plotshape(rangeShort, title="Scalp Short Entry", text="SCALP SHORT", style=shape.labeldown, location=location.abovebar, color=color.new(#FF5252, 0), textcolor=color.white, size=size.small)
+plotshape(breakoutLong, title="Breakout Long Entry", text="BUY BREAKOUT", style=shape.labelup, location=location.belowbar, color=color.new(#00E5FF, 0), textcolor=color.black, size=size.small)
+plotshape(breakoutShort, title="Breakout Short Entry", text="SELL BREAKOUT", style=shape.labeldown, location=location.abovebar, color=color.new(#E040FB, 0), textcolor=color.white, size=size.small)
+// --- DYNAMIC STATUS DASHBOARD ---
+var table statusTable = table.new(position.top_right, 2, 2, bgcolor=color.new(color.black, 20), border_color=color.gray, border_width=1)
+if barstate.islast
+    // Determine the current state string and color
+    string stateText = "Engines Hunting"
+    color stateColor = color.green
+    
+    if mx_use_box_filter and not na(avgBoxHeight)
+        if boxHeight > (avgBoxHeight * mx_max_mult)
+            stateText := "Skipped: Box Too Giant"
+            stateColor := color.red
+        else if boxHeight < (avgBoxHeight * mx_min_mult)
+            stateText := "Skipped: Box Too Compressed"
+            stateColor := color.orange
+
+    // Populate Table
+    table.cell(statusTable, 0, 0, "Today's Box:", text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 1, 0, str.tostring(boxHeight, "#.###"), text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 0, 1, "Strategy Status:", text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 1, 1, stateText, bgcolor=stateColor, text_color=color.black, text_size=size.small)
