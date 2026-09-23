@@ -1,0 +1,37 @@
+//@version=6
+indicator("Victor's Gatekeeper HUD", overlay=true)
+
+// --- CHECKLIST INPUTS ---
+step1 = input.bool(false, "1. 4H Liquidity Swept & Rejected?")
+step2 = input.bool(false, "2. 15M Liquidity Swept (Same Direction)?")
+step3 = input.bool(false, "3. 1M IFVG Confirmed (Body Close)?")
+step4 = input.bool(false, "4. Active Session Window?")
+step5 = input.bool(false, "5. Risk & SL Placed Beyond Sweep?")
+
+// --- EVALUATE VALIDITY ---
+all_conditions_met = step1 and step2 and step3 and step4 and step5
+
+// --- DRAW TINY HUD TABLE (BOTTOM LEFT) ---
+var table hud = table.new(position.bottom_left, 2, 6, bgcolor=color.rgb(15, 23, 42), border_width=1, border_color=color.gray)
+
+if barstate.islast
+    // Header
+    table.cell(hud, 0, 0, "GATEKEEPER", bgcolor=color.rgb(30, 41, 59), text_color=color.white, text_size=size.tiny)
+    table.cell(hud, 1, 0, all_conditions_met ? "APPROVED" : "BLOCKED", 
+               bgcolor = all_conditions_met ? color.green : color.red, text_color=color.white, text_size=size.tiny)
+    
+    // Checklist Items
+    table.cell(hud, 0, 1, "4H Sweep", text_color=color.white, text_size=size.tiny)
+    table.cell(hud, 1, 1, step1 ? "YES" : "NO", bgcolor=step1 ? color.green : color.rgb(51, 65, 85), text_color=color.white, text_size=size.tiny)
+    
+    table.cell(hud, 0, 2, "15M Sweep", text_color=color.white, text_size=size.tiny)
+    table.cell(hud, 1, 2, step2 ? "YES" : "NO", bgcolor=step2 ? color.green : color.rgb(51, 65, 85), text_color=color.white, text_size=size.tiny)
+    
+    table.cell(hud, 0, 3, "1M IFVG", text_color=color.white, text_size=size.tiny)
+    table.cell(hud, 1, 3, step3 ? "YES" : "NO", bgcolor=step3 ? color.green : color.rgb(51, 65, 85), text_color=color.white, text_size=size.tiny)
+
+    table.cell(hud, 0, 4, "Session", text_color=color.white, text_size=size.tiny)
+    table.cell(hud, 1, 4, step4 ? "YES" : "NO", bgcolor=step4 ? color.green : color.rgb(51, 65, 85), text_color=color.white, text_size=size.tiny)
+
+    table.cell(hud, 0, 5, "Risk/SL Max 10 per trade for the next 20 days", text_color=color.white, text_size=size.tiny)
+    table.cell(hud, 1, 5, step5 ? "YES" : "NO", bgcolor=step5 ? color.green : color.rgb(51, 65, 85), text_color=color.white, text_size=size.tiny)
