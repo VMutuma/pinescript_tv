@@ -1,0 +1,581 @@
+//@version=6
+indicator("Sessions & Key Levels {basic}", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ─────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────
+G_THEME = "Indicator Theme"
+G_WIN   = "Session Windows"
+G_LVL   = "Session Levels"
+G_PREV  = "Previous Levels"
+G_CURR  = "Current Levels"
+G_OPENS = "Opening Prices"
+G_LINE  = "Line Customisation"
+G_SWEEP = "Sweep Settings"
+G_LABEL = "Label Settings"
+
+theme = input.string("Light", "", ["Light", "Dark", "Custom"], inline = "theme", group = G_THEME, display = display.none)
+
+showAsia   = input.bool(false, "", inline = "asia", group = G_WIN, display = display.none)
+nameAsia   = input.string("asia", "", inline = "asia", group = G_WIN, display = display.none)
+sessAsia   = input.session("1800-0300", "", inline = "asia", group = G_WIN, display = display.none)
+asiaColSel = input.color(color.new(#3B82F6, 85), "", inline = "asia", group = G_WIN, active = showAsia and theme == "Custom")
+
+showLondon   = input.bool(false, "", inline = "london", group = G_WIN, display = display.none)
+nameLondon   = input.string("london", "", inline = "london", group = G_WIN, display = display.none)
+sessLondon   = input.session("0300-0930", "", inline = "london", group = G_WIN, display = display.none)
+londonColSel = input.color(color.new(#10B981, 85), "", inline = "london", group = G_WIN, active = showLondon and theme == "Custom")
+
+showNY   = input.bool(false, "", inline = "ny", group = G_WIN, display = display.none)
+nameNY   = input.string("ny am", "", inline = "ny", group = G_WIN, display = display.none)
+sessNY   = input.session("0930-1200", "", inline = "ny", group = G_WIN, display = display.none)
+nyColSel = input.color(color.new(#F59E0B, 85), "", inline = "ny", group = G_WIN, active = showNY and theme == "Custom")
+
+showNY2   = input.bool(false, "", inline = "ny2", group = G_WIN, display = display.none)
+nameNY2   = input.string("ny lunch", "", inline = "ny2", group = G_WIN, display = display.none)
+sessNY2   = input.session("1200-1300", "", inline = "ny2", group = G_WIN, display = display.none)
+ny2ColSel = input.color(color.new(#A855F7, 85), "", inline = "ny2", group = G_WIN, active = showNY2 and theme == "Custom")
+
+showNY3   = input.bool(false, "", inline = "ny3", group = G_WIN, display = display.none)
+nameNY3   = input.string("ny pm", "", inline = "ny3", group = G_WIN, display = display.none)
+sessNY3   = input.session("1300-1800", "", inline = "ny3", group = G_WIN, display = display.none)
+ny3ColSel = input.color(color.new(#EF4444, 85), "", inline = "ny3", group = G_WIN, active = showNY3 and theme == "Custom")
+
+rowAsia = input.string("asia", "", inline = "asia", group = G_LVL, display = display.none)
+asiaO   = input.bool(false, "O", inline = "asia", group = G_LVL, active = showAsia)
+asiaH   = input.bool(false, "H", inline = "asia", group = G_LVL, active = showAsia)
+asiaL   = input.bool(false, "L", inline = "asia", group = G_LVL, active = showAsia)
+asiaM   = input.bool(false, "½", inline = "asia", group = G_LVL, active = showAsia)
+
+rowLondon = input.string("london", "", inline = "london", group = G_LVL, display = display.none)
+londonO   = input.bool(false, "O", inline = "london", group = G_LVL, active = showLondon)
+londonH   = input.bool(false, "H", inline = "london", group = G_LVL, active = showLondon)
+londonL   = input.bool(false, "L", inline = "london", group = G_LVL, active = showLondon)
+londonM   = input.bool(false, "½", inline = "london", group = G_LVL, active = showLondon)
+
+rowNY = input.string("ny am", "", inline = "ny", group = G_LVL, display = display.none)
+nyO   = input.bool(false, "O", inline = "ny", group = G_LVL, active = showNY)
+nyH   = input.bool(false, "H", inline = "ny", group = G_LVL, active = showNY)
+nyL   = input.bool(false, "L", inline = "ny", group = G_LVL, active = showNY)
+nyM   = input.bool(false, "½", inline = "ny", group = G_LVL, active = showNY)
+
+rowNY2 = input.string("ny lunch", "", inline = "ny2", group = G_LVL, display = display.none)
+ny2O   = input.bool(false, "O", inline = "ny2", group = G_LVL, active = showNY2)
+ny2H   = input.bool(false, "H", inline = "ny2", group = G_LVL, active = showNY2)
+ny2L   = input.bool(false, "L", inline = "ny2", group = G_LVL, active = showNY2)
+ny2M   = input.bool(false, "½", inline = "ny2", group = G_LVL, active = showNY2)
+
+rowNY3 = input.string("ny pm", "", inline = "ny3", group = G_LVL, display = display.none)
+ny3O   = input.bool(false, "O", inline = "ny3", group = G_LVL, active = showNY3)
+ny3H   = input.bool(false, "H", inline = "ny3", group = G_LVL, active = showNY3)
+ny3L   = input.bool(false, "L", inline = "ny3", group = G_LVL, active = showNY3)
+ny3M   = input.bool(false, "½", inline = "ny3", group = G_LVL, active = showNY3)
+
+tfPrev1 = input.timeframe("1D", "", ["12M", "6M", "3M", "1M", "1W", "1D", "240", "60", "30", "15"], inline = "prev1", group = G_PREV, display = display.none)
+prev1O  = input.bool(false, "O", inline = "prev1", group = G_PREV)
+prev1H  = input.bool(false, "H", inline = "prev1", group = G_PREV)
+prev1L  = input.bool(false, "L", inline = "prev1", group = G_PREV)
+prev1M  = input.bool(false, "½", inline = "prev1", group = G_PREV)
+
+tfPrev2 = input.timeframe("240", "", ["12M", "6M", "3M", "1M", "1W", "1D", "240", "60", "30", "15"], inline = "prev2", group = G_PREV, display = display.none)
+prev2O  = input.bool(false, "O", inline = "prev2", group = G_PREV)
+prev2H  = input.bool(false, "H", inline = "prev2", group = G_PREV)
+prev2L  = input.bool(false, "L", inline = "prev2", group = G_PREV)
+prev2M  = input.bool(false, "½", inline = "prev2", group = G_PREV)
+
+tfPrev3 = input.timeframe("60", "", ["12M", "6M", "3M", "1M", "1W", "1D", "240", "60", "30", "15"], inline = "prev3", group = G_PREV, display = display.none)
+prev3O  = input.bool(false, "O", inline = "prev3", group = G_PREV)
+prev3H  = input.bool(false, "H", inline = "prev3", group = G_PREV)
+prev3L  = input.bool(false, "L", inline = "prev3", group = G_PREV)
+prev3M  = input.bool(false, "½", inline = "prev3", group = G_PREV)
+
+tfCurr1 = input.timeframe("1D", "", ["12M", "6M", "3M", "1M", "1W", "1D", "240", "60", "30", "15"], inline = "curr1", group = G_CURR, display = display.none)
+curr1O  = input.bool(false, "O", inline = "curr1", group = G_CURR)
+curr1H  = input.bool(false, "H", inline = "curr1", group = G_CURR)
+curr1L  = input.bool(false, "L", inline = "curr1", group = G_CURR)
+curr1M  = input.bool(false, "½", inline = "curr1", group = G_CURR)
+
+tfCurr2 = input.timeframe("240", "", ["12M", "6M", "3M", "1M", "1W", "1D", "240", "60", "30", "15"], inline = "curr2", group = G_CURR, display = display.none)
+curr2O  = input.bool(false, "O", inline = "curr2", group = G_CURR)
+curr2H  = input.bool(false, "H", inline = "curr2", group = G_CURR)
+curr2L  = input.bool(false, "L", inline = "curr2", group = G_CURR)
+curr2M  = input.bool(false, "½", inline = "curr2", group = G_CURR)
+
+tfCurr3 = input.timeframe("60", "", ["12M", "6M", "3M", "1M", "1W", "1D", "240", "60", "30", "15"], inline = "curr3", group = G_CURR, display = display.none)
+curr3O  = input.bool(false, "O", inline = "curr3", group = G_CURR)
+curr3H  = input.bool(false, "H", inline = "curr3", group = G_CURR)
+curr3L  = input.bool(false, "L", inline = "curr3", group = G_CURR)
+curr3M  = input.bool(false, "½", inline = "curr3", group = G_CURR)
+
+showOpen0000 = input.bool(false, "midnight", inline = "o1", group = G_OPENS)
+showOpen0830 = input.bool(false, "8:30", inline = "o2", group = G_OPENS)
+showOpen0930 = input.bool(false, "9:30", inline = "o3", group = G_OPENS)
+showOpen1000 = input.bool(false, "10:00", inline = "o4", group = G_OPENS)
+
+rowOpen      = input.string("OPEN", "", ["OPEN"], inline = "open", group = G_LINE, display = display.none)
+openColSel   = input.color(color.new(#dbdbdb, 0), "", inline = "open", group = G_LINE, active = theme == "Custom")
+openStyleSel = input.string("Dotted", "", ["Solid", "Dashed", "Dotted"], inline = "open", group = G_LINE, display = display.none)
+openWidthSel = input.string("1px", "", ["1px", "2px", "3px", "4px"], inline = "open", group = G_LINE, display = display.none)
+
+rowHi      = input.string("HIGH", "", ["HIGH"], inline = "high", group = G_LINE, display = display.none)
+hiColSel   = input.color(color.new(#dbdbdb, 0), "", inline = "high", group = G_LINE, active = theme == "Custom")
+hiStyleSel = input.string("Solid", "", ["Solid", "Dashed", "Dotted"], inline = "high", group = G_LINE, display = display.none)
+hiWidthSel = input.string("1px", "", ["1px", "2px", "3px", "4px"], inline = "high", group = G_LINE, display = display.none)
+
+rowLo      = input.string("LOW", "", ["LOW"], inline = "low", group = G_LINE, display = display.none)
+loColSel   = input.color(color.new(#dbdbdb, 0), "", inline = "low", group = G_LINE, active = theme == "Custom")
+loStyleSel = input.string("Solid", "", ["Solid", "Dashed", "Dotted"], inline = "low", group = G_LINE, display = display.none)
+loWidthSel = input.string("1px", "", ["1px", "2px", "3px", "4px"], inline = "low", group = G_LINE, display = display.none)
+
+rowMid      = input.string("MID", "", ["MID"], inline = "mid", group = G_LINE, display = display.none)
+midColSel   = input.color(color.new(#dbdbdb, 0), "", inline = "mid", group = G_LINE, active = theme == "Custom")
+midStyleSel = input.string("Dashed", "", ["Solid", "Dashed", "Dotted"], inline = "mid", group = G_LINE, display = display.none)
+midWidthSel = input.string("1px", "", ["1px", "2px", "3px", "4px"], inline = "mid", group = G_LINE, display = display.none)
+
+showSweep   = input.bool(false, "Show Sweeps", inline = "sweep1", group = G_SWEEP)
+extendSweep = input.bool(false, "Extend Line", inline = "sweep2", group = G_SWEEP, active = showSweep)
+
+sweepColSel   = input.color(color.new(#dbdbdb, 0), "", inline = "sweep3", group = G_SWEEP, active = showSweep and theme == "Custom")
+sweepStyleSel = input.string("Dashed", "", ["Solid", "Dashed", "Dotted"], inline = "sweep3", group = G_SWEEP, display = display.none, active = showSweep)
+sweepWidthSel = input.string("1px", "", ["1px", "2px", "3px", "4px"], inline = "sweep3", group = G_SWEEP, display = display.none, active = showSweep)
+
+showLabel    = input.bool(true, "Show Labels", inline = "label", group = G_LABEL)
+labelSizeSel = input.string("Small", "", ["Tiny", "Small", "Normal", "Large", "Huge"], inline = "label", group = G_LABEL, display = display.none, active = showLabel)
+
+toStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+
+var string openStyle  = toStyle(openStyleSel)
+var string hiStyle    = toStyle(hiStyleSel)
+var string loStyle    = toStyle(loStyleSel)
+var string midStyle   = toStyle(midStyleSel)
+var string sweepStyle = toStyle(sweepStyleSel)
+
+toWidth(string s) =>
+    switch s
+        "1px" => 1
+        "2px" => 2
+        "3px" => 3
+        "4px" => 4
+
+var int openWidth  = toWidth(openWidthSel)
+var int hiWidth    = toWidth(hiWidthSel)
+var int loWidth    = toWidth(loWidthSel)
+var int midWidth   = toWidth(midWidthSel)
+var int sweepWidth = toWidth(sweepWidthSel)
+
+toSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+
+var string labelSize = toSize(labelSizeSel)
+
+toName(string s) =>
+    switch s
+        "1M"  => "M"
+        "1W"  => "W"
+        "1D"  => "D"
+        "240" => "4H"
+        "60"  => "1H"
+        "30"  => "30m"
+        "15"  => "15m"
+        => s
+
+var string prev1Name = toName(tfPrev1)
+var string prev2Name = toName(tfPrev2)
+var string prev3Name = toName(tfPrev3)
+var string curr1Name = toName(tfCurr1)
+var string curr2Name = toName(tfCurr2)
+var string curr3Name = toName(tfCurr3)
+
+tfMs      = timeframe.in_seconds() * 1000
+rightEdge = time + 2 * tfMs
+
+themed(color dark, color lightCol, color custom) =>
+    switch theme
+        "Dark"   => dark
+        "Light"  => lightCol
+        "Custom" => custom
+
+var color asiaCol   = themed(color.new(#3B82F6, 85), color.new(#2563EB, 85), asiaColSel)
+var color londonCol = themed(color.new(#10B981, 85), color.new(#059669, 85), londonColSel)
+var color nyCol     = themed(color.new(#F59E0B, 85), color.new(#D97706, 85), nyColSel)
+var color ny2Col    = themed(color.new(#A855F7, 85), color.new(#7C3AED, 85), ny2ColSel)
+var color ny3Col    = themed(color.new(#EF4444, 85), color.new(#DC2626, 85), ny3ColSel)
+var color openCol   = themed(color.new(#dbdbdb, 0), color.new(#000000, 0), openColSel)
+var color hiCol     = themed(color.new(#dbdbdb, 0), color.new(#000000, 0), hiColSel)
+var color loCol     = themed(color.new(#dbdbdb, 0), color.new(#000000, 0), loColSel)
+var color midCol    = themed(color.new(#dbdbdb, 0), color.new(#000000, 0), midColSel)
+var color sweepCol  = themed(color.new(#dbdbdb, 0), color.new(#000000, 0), sweepColSel)
+
+// ─────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────
+
+// One drawable level anchor (a level's Open, High, Low or Mid). Holds the
+// drawing objects plus the geometry resolved for the current bar, which the
+// overlap pass reads to decide what to merge.
+type Anchor
+    string baseText
+    line   ln
+    label  lbl
+
+    float  price
+    int    leftTime
+    int    rightTime
+    int    labelX
+
+    string lineStyle
+    int    lineWidth
+    color  lineColor
+
+    bool   lineOn  = false
+    bool   labelOn = false
+
+type Level
+    int oTime
+    int hTime
+    int lTime
+
+    float runO
+    float runH
+    float runL
+    int runOTime
+    int runHTime
+    int runLTime
+
+    float o
+    float h
+    float l
+    float m
+
+    bool hSwept
+    bool lSwept
+    int hSweepTime
+    int lSweepTime
+
+    Anchor aO
+    Anchor aH
+    Anchor aL
+    Anchor aM
+
+    box box
+
+newLevel() =>
+    Level.new(aO = Anchor.new(), aH = Anchor.new(), aL = Anchor.new(), aM = Anchor.new())
+
+// ─────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────
+var Level asia      = newLevel()
+var Level london    = newLevel()
+var Level ny        = newLevel()
+var Level ny2       = newLevel()
+var Level ny3       = newLevel()
+var Level current1  = newLevel()
+var Level current2  = newLevel()
+var Level current3  = newLevel()
+var Level previous1 = newLevel()
+var Level previous2 = newLevel()
+var Level previous3 = newLevel()
+
+// Opening-price levels only ever use their Open anchor; the other three are
+// registered for uniformity and simply never switch on.
+var Level open0000 = newLevel()
+var Level open0830 = newLevel()
+var Level open0930 = newLevel()
+var Level open1000 = newLevel()
+
+// Merge priority order: sessions, opening prices, previous levels, current
+// levels. Within a level: Open, High, Low, Mid. Earliest entry wins a merge.
+var array<Level> allLevels = array.from<Level>(
+     asia, london, ny, ny2, ny3,
+     open0000, open0830, open0930, open1000,
+     previous1, previous2, previous3,
+     current1, current2, current3)
+
+var array<Anchor> anchors = array.new<Anchor>()
+
+if barstate.isfirst
+    for lvl in allLevels
+        anchors.push(lvl.aO)
+        anchors.push(lvl.aH)
+        anchors.push(lvl.aL)
+        anchors.push(lvl.aM)
+
+// ─────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────
+
+// Exact price equality, guarded against float drift. O/H/L are raw feed values
+// and compare bit-identically, but Mid is computed and can differ in the last
+// bits from a mathematically equal value. Real prices sit on the tick grid, so
+// two values are either identical or at least one tick apart.
+samePrice(float a, float b) =>
+    not na(a) and not na(b) and math.abs(a - b) < syminfo.mintick * 0.01
+
+updateHiLoLine(Anchor a, bool show, bool swept, int sweepTime, int left, float value, bool isHi, color oriColor, string oriStyle, int oriWidth) =>
+    if show and not na(value) and not na(left)
+        x2  = showSweep and swept and not extendSweep ? sweepTime : rightEdge
+        col = showSweep and swept ? sweepCol : oriColor
+        sty = showSweep and swept ? sweepStyle : oriStyle
+        wid = showSweep and swept ? sweepWidth : oriWidth
+
+        line.set_xy1(a.ln, left, value)
+        line.set_xy2(a.ln, x2, value)
+        line.set_color(a.ln, col)
+        line.set_style(a.ln, sty)
+        line.set_width(a.ln, wid)
+
+        a.price     := value
+        a.leftTime  := left
+        a.rightTime := x2
+        a.lineStyle := sty
+        a.lineWidth := wid
+        a.lineColor := col
+        a.lineOn    := true
+
+        if showLabel
+            x        = showSweep and swept and not extendSweep ? int((left + sweepTime) / 2) : x2
+            lblStyle = showSweep and swept and not extendSweep ? (isHi ? label.style_label_down : label.style_label_up) : label.style_label_left
+
+            label.set_xy(a.lbl, x, value)
+            label.set_textcolor(a.lbl, col)
+            label.set_style(a.lbl, lblStyle)
+
+            a.labelX  := x
+            a.labelOn := true
+
+updateOpenMidLine(Anchor a, bool show, int left, float value, color col, string sty, int wid) =>
+    if show and not na(value) and not na(left)
+        line.set_xy1(a.ln, left, value)
+        line.set_xy2(a.ln, rightEdge, value)
+        line.set_color(a.ln, col)
+        line.set_style(a.ln, sty)
+        line.set_width(a.ln, wid)
+
+        a.price     := value
+        a.leftTime  := left
+        a.rightTime := rightEdge
+        a.lineStyle := sty
+        a.lineWidth := wid
+        a.lineColor := col
+        a.lineOn    := true
+
+        if showLabel
+            label.set_xy(a.lbl, rightEdge, value)
+            label.set_textcolor(a.lbl, col)
+            label.set_style(a.lbl, label.style_label_left)
+
+            a.labelX  := rightEdge
+            a.labelOn := true
+
+updateLevel(Level lvl, bool showLevel, string stringLevel, string inLevel, color colorSession,
+    bool showO, bool showH, bool showL, bool showM,
+    bool isSession, bool isCurrent, bool isPrevious,
+    string tf) =>
+
+    prefix    = isPrevious ? "prev " : ""
+    inSession = isSession ? not na(time("", inLevel, "America/New_York")) : isCurrent ? true : false
+    isOpen    = isSession ? (inSession and not inSession[1]) : (time(tf) != time(tf, bars_back = 1))
+
+    if showLevel and (not isSession ? timeframe.in_seconds() <= timeframe.in_seconds(tf) : true) and
+     (isSession ? timeframe.isintraday : true)
+
+        if barstate.isfirst
+            lvl.aO.baseText := prefix + stringLevel + " open"
+            lvl.aH.baseText := prefix + stringLevel + " high"
+            lvl.aL.baseText := prefix + stringLevel + " low"
+            lvl.aM.baseText := prefix + stringLevel + " mid"
+
+            lvl.aO.ln := line.new(na, na, na, na, xloc = xloc.bar_time, color = openCol, style = openStyle, width = openWidth)
+            lvl.aH.ln := line.new(na, na, na, na, xloc = xloc.bar_time)
+            lvl.aL.ln := line.new(na, na, na, na, xloc = xloc.bar_time)
+            lvl.aM.ln := line.new(na, na, na, na, xloc = xloc.bar_time, color = midCol, style = midStyle, width = midWidth)
+
+            lvl.aO.lbl := label.new(na, na, xloc = xloc.bar_time, text = lvl.aO.baseText, color = color.new(#000000, 100), size = labelSize)
+            lvl.aH.lbl := label.new(na, na, xloc = xloc.bar_time, text = lvl.aH.baseText, color = color.new(#000000, 100), size = labelSize)
+            lvl.aL.lbl := label.new(na, na, xloc = xloc.bar_time, text = lvl.aL.baseText, color = color.new(#000000, 100), size = labelSize)
+            lvl.aM.lbl := label.new(na, na, xloc = xloc.bar_time, text = lvl.aM.baseText, color = color.new(#000000, 100), size = labelSize)
+
+            lvl.box := box.new(na, na, na, na, color.new(#000000, 100), xloc = xloc.bar_time, bgcolor = colorSession)
+
+        if isOpen
+            if not isPrevious
+                lvl.o := open
+                lvl.h := high
+                lvl.l := low
+                lvl.m := (lvl.h + lvl.l) * 0.5
+
+                lvl.oTime := time
+                lvl.hTime := time
+                lvl.lTime := time
+
+            else
+                lvl.o      := lvl.runO
+                lvl.h      := lvl.runH
+                lvl.l      := lvl.runL
+                lvl.m      := (lvl.runH + lvl.runL) * 0.5
+
+                lvl.oTime := lvl.runOTime
+                lvl.hTime := lvl.runHTime
+                lvl.lTime := lvl.runLTime
+
+            lvl.runO      := open
+            lvl.runH      := high
+            lvl.runL      := low
+            lvl.runOTime := time
+            lvl.runHTime := time
+            lvl.runLTime := time
+
+            lvl.hSwept      := false
+            lvl.lSwept      := false
+            lvl.hSweepTime := na
+            lvl.lSweepTime := na
+
+        if isPrevious and not isOpen
+            if high >= lvl.runH
+                lvl.runH      := high
+                lvl.runHTime := time
+            if low <= lvl.runL
+                lvl.runL      := low
+                lvl.runLTime := time
+
+        if inSession
+            if high > lvl.h
+                lvl.h      := high
+                lvl.hTime := time
+
+            if low < lvl.l
+                lvl.l      := low
+                lvl.lTime := time
+
+            lvl.m := (lvl.h + lvl.l) * 0.5
+
+            if isSession
+                lvl.box.set_lefttop(lvl.oTime, lvl.h), lvl.box.set_rightbottom(time, lvl.l)
+
+        if not inSession
+            if not lvl.hSwept and high > lvl.h
+                lvl.hSwept      := true
+                lvl.hSweepTime := time
+
+            if not lvl.lSwept and low < lvl.l
+                lvl.lSwept      := true
+                lvl.lSweepTime := time
+
+        updateHiLoLine(lvl.aH, showH, lvl.hSwept, lvl.hSweepTime, lvl.hTime, lvl.h, true, hiCol, hiStyle, hiWidth)
+        updateHiLoLine(lvl.aL, showL, lvl.lSwept, lvl.lSweepTime, lvl.lTime, lvl.l, false, loCol, loStyle, loWidth)
+
+        updateOpenMidLine(lvl.aO, showO, lvl.oTime, lvl.o, openCol, openStyle, openWidth)
+        updateOpenMidLine(lvl.aM, showM, lvl.oTime, lvl.m, midCol, midStyle, midWidth)
+
+// A single opening price for a fixed time of day, redrawn each time that time
+// comes round. No high, low, mid, box or sweep — just the Open anchor, styled
+// from the OPEN row like every other open.
+updateTimeOpen(Level lvl, bool show, string openName, int hh, int mm) =>
+    if show and timeframe.isintraday
+
+        if barstate.isfirst
+            lvl.aO.baseText := openName + " open"
+            lvl.aO.ln  := line.new(na, na, na, na, xloc = xloc.bar_time, color = openCol, style = openStyle, width = openWidth)
+            lvl.aO.lbl := label.new(na, na, xloc = xloc.bar_time, text = lvl.aO.baseText, color = color.new(#000000, 100), size = labelSize)
+
+        // The bar must START at hh:mm New York time. On a timeframe where it
+        // never does — 9:30 on a 1H chart — this never fires, lvl.o stays na and
+        // updateOpenMidLine leaves the level hidden, rather than labelling some
+        // other bar's open as the 9:30 open.
+        if hour(time, "America/New_York") == hh and minute(time, "America/New_York") == mm
+            lvl.o     := open
+            lvl.oTime := time
+
+        updateOpenMidLine(lvl.aO, true, lvl.oTime, lvl.o, openCol, openStyle, openWidth)
+
+// Clear the per-bar render state so every anchor is re-declared from scratch by
+// updateLevel. Anchors whose level is hidden, whose timeframe guard fails or
+// whose value is na simply stay off and take no part in the merge.
+resetAnchors() =>
+    for a in anchors
+        a.lineOn  := false
+        a.labelOn := false
+
+// Collapse coincident drawings. Two independent passes, both on the last bar
+// only — lines and labels are persistent objects repositioned every bar, so the
+// last-bar state is the only one ever rendered.
+//
+// Lines merge only when they are pixel-identical: same price, same left and
+// right ends, same style, width and colour. That guard keeps a swept line (which
+// stops short and restyles) from swallowing a live one at the same price, and
+// keeps a dotted open from swallowing a solid high.
+//
+// Labels merge on price and resolved x position. A swept level parks its label
+// at the midpoint of its line rather than the right edge, so it does not collide
+// with a right-edge label at the same price and must not be merged into it.
+sameLine(Anchor a, Anchor b) =>
+    samePrice(a.price, b.price) and a.leftTime == b.leftTime and a.rightTime == b.rightTime and
+     a.lineStyle == b.lineStyle and a.lineWidth == b.lineWidth and a.lineColor == b.lineColor
+
+sameLabel(Anchor a, Anchor b) =>
+    samePrice(a.price, b.price) and a.labelX == b.labelX
+
+mergeOverlaps() =>
+    n = anchors.size()
+    if barstate.islast and n > 1
+        for i = 0 to n - 2
+            a = anchors.get(i)
+            if a.lineOn
+                for j = i + 1 to n - 1
+                    b = anchors.get(j)
+                    if b.lineOn and sameLine(a, b)
+                        line.set_xy1(b.ln, na, na)
+                        line.set_xy2(b.ln, na, na)
+                        b.lineOn := false
+
+        for i = 0 to n - 1
+            a = anchors.get(i)
+            if a.labelOn
+                txt = a.baseText
+                if i < n - 1
+                    for j = i + 1 to n - 1
+                        b = anchors.get(j)
+                        if b.labelOn and sameLabel(a, b)
+                            txt := txt + " / " + b.baseText
+                            label.set_xy(b.lbl, na, na)
+                            b.labelOn := false
+                // Rewritten every bar, not just on merge, so a label reverts to
+                // its own text once the group it joined breaks apart.
+                label.set_text(a.lbl, txt)
+
+// ─────────────────────────────────────────────────────────────
+// Main
+// ─────────────────────────────────────────────────────────────
+resetAnchors()
+
+updateLevel(asia, showAsia, nameAsia, sessAsia, asiaCol, asiaO, asiaH, asiaL, asiaM, true, false, false, na)
+updateLevel(london, showLondon, nameLondon, sessLondon, londonCol, londonO, londonH, londonL, londonM, true, false, false, na)
+updateLevel(ny, showNY, nameNY, sessNY, nyCol, nyO, nyH, nyL, nyM, true, false, false, na)
+updateLevel(ny2, showNY2, nameNY2, sessNY2, ny2Col, ny2O, ny2H, ny2L, ny2M, true, false, false, na)
+updateLevel(ny3, showNY3, nameNY3, sessNY3, ny3Col, ny3O, ny3H, ny3L, ny3M, true, false, false, na)
+
+updateTimeOpen(open0000, showOpen0000, "midnight", 0, 0)
+updateTimeOpen(open0830, showOpen0830, "8:30", 8, 30)
+updateTimeOpen(open0930, showOpen0930, "9:30", 9, 30)
+updateTimeOpen(open1000, showOpen1000, "10:00", 10, 0)
+
+updateLevel(current1, true, curr1Name, na, na, curr1O, curr1H, curr1L, curr1M, false, true, false, tfCurr1)
+updateLevel(current2, true, curr2Name, na, na, curr2O, curr2H, curr2L, curr2M, false, true, false, tfCurr2)
+updateLevel(current3, true, curr3Name, na, na, curr3O, curr3H, curr3L, curr3M, false, true, false, tfCurr3)
+
+updateLevel(previous1, true, prev1Name, na, na, prev1O, prev1H, prev1L, prev1M, false, false, true, tfPrev1)
+updateLevel(previous2, true, prev2Name, na, na, prev2O, prev2H, prev2L, prev2M, false, false, true, tfPrev2)
+updateLevel(previous3, true, prev3Name, na, na, prev3O, prev3H, prev3L, prev3M, false, false, true, tfPrev3)
+
+mergeOverlaps()
