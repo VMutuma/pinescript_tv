@@ -1,0 +1,125 @@
+//@version=5
+strategy("NQ Strategy: Option A + B + CHOP (Anti-Wick)", overlay=true, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.cash_per_contract, commission_value=2.0)
+
+// ==========================================
+// INPUTS
+// ==========================================
+fastLen       = input.int(9, title="Fast EMA Length", group="Base EMA Settings")
+slowLen       = input.int(21, title="Slow EMA Length", group="Base EMA Settings")
+
+// Master Switches
+useOptionA    = input.bool(true, title="Enable Option A: Price Breakout Confirmation?", group="Option A (Structure Break)")
+breakLookback = input.int(3, title="Lookback Bars for High/Low Break", group="Option A (Structure Break)")
+
+useOptionB    = input.bool(true, title="Enable Option B: 15-Min HTF Trend Filter?", group="Option B (HTF Alignment)")
+htfResolution = input.timeframe("15", title="HTF Timeframe", group="Option B (HTF Alignment)")
+
+useChopFilter = input.bool(false, title="Enable Choppiness Index Filter?", group="Option C (Choppiness Index)")
+chopThreshold = input.float(55.0, title="Max Allowed CHOP (Below = Trend)", group="Option C (Choppiness Index)")
+
+// Risk Management
+useTpSl       = input.bool(true, title="Use ATR-Based Risk Management?", group="Risk Management")
+atrLen        = input.int(14, title="ATR Length", group="Risk Management")
+slAtrMult     = input.float(1.5, title="Stop Loss (x ATR)", group="Risk Management")
+rrRatio       = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk Management")
+
+// ==========================================
+// CALCULATIONS
+// ==========================================
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+atrVal  = ta.atr(atrLen)
+
+// ------------------------------------------
+// OPTION A: Price Breakout Confirmation
+// ------------------------------------------
+highestRecent = ta.highest(high, breakLookback)[1]
+lowestRecent  = ta.lowest(low, breakLookback)[1]
+
+confirmBuy  = (fastEma > slowEma) and (close > highestRecent)
+confirmSell = (fastEma < slowEma) and (close < lowestRecent)
+
+// ------------------------------------------
+// OPTION B: 15-Min HTF Alignment
+// ------------------------------------------
+htfFastEma = request.security(syminfo.tickerid, htfResolution, ta.ema(close, fastLen), barmerge.gaps_off, barmerge.lookahead_off)
+htfSlowEma = request.security(syminfo.tickerid, htfResolution, ta.ema(close, slowLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+htfBullish = htfFastEma > htfSlowEma
+htfBearish = htfFastEma < htfSlowEma
+
+// ------------------------------------------
+// OPTION C: Choppiness Index
+// ------------------------------------------
+ciSum   = math.sum(ta.tr(true), 14)
+ciMax   = ta.highest(high, 14)
+ciMin   = ta.lowest(low, 14)
+chopVal = 100 * (math.log10(ciSum / (ciMax - ciMin)) / math.log10(14))
+
+passChop = useChopFilter ? (chopVal < chopThreshold) : true
+
+// ==========================================
+// MASTER SIGNAL SWITCH LOGIC
+// ==========================================
+// Require at least one option to be active to take trades
+anyOptionActive = useOptionA or useOptionB or useChopFilter
+
+condA_Buy  = useOptionA ? confirmBuy  : true
+condA_Sell = useOptionA ? confirmSell : true
+
+condB_Buy  = useOptionB ? htfBullish  : true
+condB_Sell = useOptionB ? htfBearish  : true
+
+rawBuy  = anyOptionActive and condA_Buy and condB_Buy and passChop
+rawSell = anyOptionActive and condA_Sell and condB_Sell and passChop
+
+// ==========================================
+// ANTI-WICK CANDLE CLOSE EXECUTION
+// ==========================================
+candleClosed = barstate.isconfirmed
+
+var int signalState = 0 
+
+bool finalBuy  = false
+bool finalSell = false
+
+if candleClosed
+    if rawBuy and signalState != 1 and strategy.position_size == 0
+        finalBuy    := true
+        signalState := 1
+
+    if rawSell and signalState != -1 and strategy.position_size == 0
+        finalSell   := true
+        signalState := -1
+
+    // Reset regime state on opposite EMA cross
+    if ta.crossunder(fastEma, slowEma) and signalState == 1
+        signalState := 0
+
+    if ta.crossover(fastEma, slowEma) and signalState == -1
+        signalState := 0
+
+// ==========================================
+// STRATEGY EXECUTION & EXITS
+// ==========================================
+if finalBuy
+    strategy.entry("Long", strategy.long)
+    if useTpSl
+        float slPrice = close - (atrVal * slAtrMult)
+        float tpPrice = close + (atrVal * slAtrMult * rrRatio)
+        strategy.exit("Long Exit", "Long", stop=slPrice, limit=tpPrice)
+
+if finalSell
+    strategy.entry("Short", strategy.short)
+    if useTpSl
+        float slPrice = close + (atrVal * slAtrMult)
+        float tpPrice = close - (atrVal * slAtrMult * rrRatio)
+        strategy.exit("Short Exit", "Short", stop=slPrice, limit=tpPrice)
+
+// ==========================================
+// PLOTTING & VISUALS
+// ==========================================
+plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
+plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
+
+bgcolor(useOptionB ? (htfBullish ? color.new(color.green, 93) : color.new(color.red, 93)) : na, title="HTF Trend Bias")
