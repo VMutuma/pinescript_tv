@@ -1,0 +1,112 @@
+//@version=5
+strategy("NQ Optimized 5M Trend + Structure Strategy", overlay=true, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.cash_per_contract, commission_value=2.0)
+
+// ==========================================
+// INPUTS
+// ==========================================
+fastLen       = input.int(9, title="Fast EMA Length", group="Core EMA Settings")
+slowLen       = input.int(21, title="Slow EMA Length", group="Core EMA Settings")
+
+// Structure Break Confirmation
+breakLookback = input.int(5, title="Breakout Lookback Bars", group="Structure Confirmation")
+
+// Micro-HTF Settings (Fixed to 5M for Momentum)
+htfResolution = input.timeframe("5", title="Micro-HTF Timeframe", group="HTF Alignment")
+
+// Choppiness Index Filter
+useChopFilter = input.bool(true, title="Enable Choppiness Index Filter?", group="Anti-Chop Filter")
+chopLen       = input.int(14, title="CHOP Length", group="Anti-Chop Filter")
+chopThreshold = input.float(55.0, title="Max Allowed CHOP (Below = Trend)", group="Anti-Chop Filter")
+
+// Risk Management & Exits
+useTpSl       = input.bool(true, title="Use ATR Risk/Reward Exits?", group="Risk Management")
+atrLen        = input.int(14, title="ATR Period", group="Risk Management")
+slAtrMult     = input.float(1.5, title="Stop Loss (x ATR)", group="Risk Management")
+rrRatio       = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk Management")
+
+// ==========================================
+// CALCULATIONS
+// ==========================================
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+atrVal  = ta.atr(atrLen)
+
+// 1. Structure Breakout Levels (5-Bar Range)
+highestRecent = ta.highest(high, breakLookback)[1]
+lowestRecent  = ta.lowest(low, breakLookback)[1]
+
+confirmBuy  = (fastEma > slowEma) and (close > highestRecent)
+confirmSell = (fastEma < slowEma) and (close < lowestRecent)
+
+// 2. Micro-HTF Order Flow Alignment (5M Timeframe)
+htfFastEma = request.security(syminfo.tickerid, htfResolution, ta.ema(close, fastLen), barmerge.gaps_off, barmerge.lookahead_off)
+htfSlowEma = request.security(syminfo.tickerid, htfResolution, ta.ema(close, slowLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+htfBullish = htfFastEma > htfSlowEma
+htfBearish = htfFastEma < htfSlowEma
+
+// 3. Choppiness Index Filter
+ciSum   = math.sum(ta.tr(true), chopLen)
+ciMax   = ta.highest(high, chopLen)
+ciMin   = ta.lowest(low, chopLen)
+chopVal = 100 * (math.log10(ciSum / (ciMax - ciMin)) / math.log10(chopLen))
+
+passChop = useChopFilter ? (chopVal < chopThreshold) : true
+
+// ==========================================
+// UNIFIED ENTRY CONDITIONS
+// ==========================================
+rawBuy  = confirmBuy and htfBullish and passChop
+rawSell = confirmSell and htfBearish and passChop
+
+// ==========================================
+// ANTI-WICK CANDLE CLOSE EXECUTION
+// ==========================================
+candleClosed = barstate.isconfirmed
+
+var int signalState = 0 
+
+bool finalBuy  = false
+bool finalSell = false
+
+if candleClosed
+    if rawBuy and signalState != 1 and strategy.position_size == 0
+        finalBuy    := true
+        signalState := 1
+
+    if rawSell and signalState != -1 and strategy.position_size == 0
+        finalSell   := true
+        signalState := -1
+
+    // Reset regime lock when base EMAs cross back
+    if ta.crossunder(fastEma, slowEma) and signalState == 1
+        signalState := 0
+
+    if ta.crossover(fastEma, slowEma) and signalState == -1
+        signalState := 0
+
+// ==========================================
+// STRATEGY EXECUTION & EXITS
+// ==========================================
+if finalBuy
+    strategy.entry("Long", strategy.long)
+    if useTpSl
+        float slPrice = close - (atrVal * slAtrMult)
+        float tpPrice = close + (atrVal * slAtrMult * rrRatio)
+        strategy.exit("Long Exit", "Long", stop=slPrice, limit=tpPrice)
+
+if finalSell
+    strategy.entry("Short", strategy.short)
+    if useTpSl
+        float slPrice = close + (atrVal * slAtrMult)
+        float tpPrice = close - (atrVal * slAtrMult * rrRatio)
+        strategy.exit("Short Exit", "Short", stop=slPrice, limit=tpPrice)
+
+// ==========================================
+// PLOTTING & VISUALS
+// ==========================================
+plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
+plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
+
+// Background highlight: Green = Bullish 5M HTF, Red = Bearish 5M HTF
+bgcolor(htfBullish ? color.new(color.green, 93) : color.new(color.red, 93), title="5M HTF Bias")
