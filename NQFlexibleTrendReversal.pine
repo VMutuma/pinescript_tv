@@ -1,0 +1,95 @@
+//@version=5
+indicator("NQ Flexible Trend + Reversal (Anti-Chop)", overlay=true)
+
+// ==========================================
+// INPUTS
+// ==========================================
+fastEmaLen = input.int(9, title="Fast EMA Length", group="EMA Settings")
+slowEmaLen = input.int(21, title="Slow EMA Length", group="EMA Settings")
+
+// Chop & Trend Filters
+useAdxFilter    = input.bool(true, title="Enable ADX Trend Strength Filter?", group="Anti-Chop Filters")
+adxThreshold    = input.int(20, title="Min ADX Threshold", group="Anti-Chop Filters")
+adxLen          = input.int(14, title="ADX Smoothing Length", group="Anti-Chop Filters")
+
+useSpreadFilter = input.bool(true, title="Enable EMA Spread Filter?", group="Anti-Chop Filters")
+minSpreadMult   = input.float(0.12, title="Min EMA Distance (x ATR)", group="Anti-Chop Filters")
+
+// Regime Rules
+allowCounterVwap = input.bool(true, title="Allow Shorting Above VWAP / Longing Below VWAP on Crosses?", group="Strategy Logic")
+
+// ==========================================
+// CALCULATIONS
+// ==========================================
+fastEma = ta.ema(close, fastEmaLen)
+slowEma = ta.ema(close, slowEmaLen)
+vwapVal = ta.vwap(hlc3)
+atrVal  = ta.atr(14)
+
+// ADX Filter
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxFilter = useAdxFilter ? (adxVal >= adxThreshold) : true
+
+// Spread Filter
+emaDistance  = math.abs(fastEma - slowEma)
+spreadFilter = useSpreadFilter ? (emaDistance >= (atrVal * minSpreadMult)) : true
+
+notInChop = adxFilter and spreadFilter
+
+// Dynamic High/Low Exhaustion Check (Filters out stray buy signals near structural tops)
+highest20 = ta.highest(high, 20)
+notExhaustedBuy = close < highest20[1] // Avoid buying at the absolute peak candle
+
+// ==========================================
+// ENTRY LOGIC (VWAP + COUNTER-VWAP REVERSALS)
+// ==========================================
+// 1. Trend Pullback Setups (With VWAP Alignment)
+trendBuy  = (close > vwapVal) and (fastEma > slowEma) and (low <= fastEma) and (close > open) and notExhaustedBuy
+trendSell = (close < vwapVal) and (fastEma < slowEma) and (high >= fastEma) and (close < open)
+
+// 2. Reversal / Breakout Setups (Catches drops BEFORE price hits VWAP)
+reversalSell = allowCounterVwap and ta.crossunder(fastEma, slowEma) and (close < open)
+reversalBuy  = allowCounterVwap and ta.crossover(fastEma, slowEma) and (close > open)
+
+// Combined Raw Setups
+rawBuySetup  = (trendBuy or reversalBuy) and notInChop
+rawSellSetup = (trendSell or reversalSell) and notInChop
+
+// ==========================================
+// STRICT REGIME & SIGNAL LOCK
+// ==========================================
+var int tradeRegime = 0 
+
+// Invalidation Event
+bool buyInvalidated  = ta.crossunder(fastEma, slowEma)
+bool sellInvalidated = ta.crossover(fastEma, slowEma)
+
+if tradeRegime == 1 and buyInvalidated
+    tradeRegime := 0
+
+if tradeRegime == -1 and sellInvalidated
+    tradeRegime := 0
+
+bool finalBuy  = false
+bool finalSell = false
+
+if rawBuySetup and tradeRegime <= 0
+    finalBuy    := true
+    tradeRegime := 1
+
+if rawSellSetup and tradeRegime >= 0
+    finalSell   := true
+    tradeRegime := -1
+
+// ==========================================
+// PLOTTING
+// ==========================================
+plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=1)
+plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=1)
+plot(vwapVal, title="VWAP", color=color.purple, linewidth=2)
+
+plotshape(finalBuy, title="BUY Signal", style=shape.labelup, location=location.belowbar, 
+          color=color.green, textcolor=color.white, text="BUY", size=size.small)
+
+plotshape(finalSell, title="SELL Signal", style=shape.labeldown, location=location.abovebar, 
+          color=color.red, textcolor=color.white, text="SELL", size=size.small)
