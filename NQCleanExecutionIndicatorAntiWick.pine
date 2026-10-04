@@ -1,0 +1,112 @@
+//@version=5
+indicator("NQ Clean Execution Indicator (Anti-Wick)", overlay=true)
+
+// ==========================================
+// INPUTS
+// ==========================================
+fastLen       = input.int(9, title="Fast EMA Length", group="Base EMA Settings")
+slowLen       = input.int(21, title="Slow EMA Length", group="Base EMA Settings")
+
+// Master Switches
+useOptionA    = input.bool(true, title="Enable Option A: Price Breakout Confirmation?", group="Option A (Structure Break)")
+breakLookback = input.int(3, title="Lookback Bars for High/Low Break", group="Option A (Structure Break)")
+
+useOptionB    = input.bool(true, title="Enable Option B: 15-Min HTF Trend Filter?", group="Option B (HTF Alignment)")
+htfResolution = input.timeframe("15", title="HTF Timeframe", group="Option B (HTF Alignment)")
+
+useChopFilter = input.bool(false, title="Enable Choppiness Index Filter?", group="Option C (Choppiness Index)")
+chopThreshold = input.float(55.0, title="Max Allowed CHOP (Below = Trend)", group="Option C (Choppiness Index)")
+
+// ==========================================
+// CALCULATIONS
+// ==========================================
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+
+// ------------------------------------------
+// OPTION A: Price Breakout Confirmation
+// ------------------------------------------
+highestRecent = ta.highest(high, breakLookback)[1]
+lowestRecent  = ta.lowest(low, breakLookback)[1]
+
+// Evaluated on candle close
+confirmBuy  = (fastEma > slowEma) and (close > highestRecent)
+confirmSell = (fastEma < slowEma) and (close < lowestRecent)
+
+// ------------------------------------------
+// OPTION B: 15-Min HTF Alignment
+// ------------------------------------------
+htfFastEma = request.security(syminfo.tickerid, htfResolution, ta.ema(close, fastLen), barmerge.gaps_off, barmerge.lookahead_off)
+htfSlowEma = request.security(syminfo.tickerid, htfResolution, ta.ema(close, slowLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+htfBullish = htfFastEma > htfSlowEma
+htfBearish = htfFastEma < htfSlowEma
+
+// ------------------------------------------
+// OPTION C: Choppiness Index
+// ------------------------------------------
+ciSum   = math.sum(ta.tr(true), 14)
+ciMax   = ta.highest(high, 14)
+ciMin   = ta.lowest(low, 14)
+chopVal = 100 * (math.log10(ciSum / (ciMax - ciMin)) / math.log10(14))
+
+passChop = useChopFilter ? (chopVal < chopThreshold) : true
+
+// ==========================================
+// MASTER SIGNAL SWITCH LOGIC
+// ==========================================
+// Check if at least one strategy option is active
+anyOptionActive = useOptionA or useOptionB or useChopFilter
+
+// Evaluate setups
+condA_Buy  = useOptionA ? confirmBuy  : true
+condA_Sell = useOptionA ? confirmSell : true
+
+condB_Buy  = useOptionB ? htfBullish  : true
+condB_Sell = useOptionB ? htfBearish  : true
+
+// Raw setups require ALL active filters to pass
+rawBuy  = anyOptionActive and condA_Buy and condB_Buy and passChop
+rawSell = anyOptionActive and condA_Sell and condB_Sell and passChop
+
+// ==========================================
+// ANTI-WICK CANDLE CLOSE EXECUTION
+// ==========================================
+// ONLY trigger signals on confirmed candle close (barstate.isconfirmed)
+candleClosed = barstate.isconfirmed
+
+var int signalState = 0 
+
+bool finalBuy  = false
+bool finalSell = false
+
+if candleClosed
+    if rawBuy and signalState != 1
+        finalBuy    := true
+        signalState := 1
+
+    if rawSell and signalState != -1
+        finalSell   := true
+        signalState := -1
+
+    // Reset regime state on opposite EMA cross
+    if ta.crossunder(fastEma, slowEma) and signalState == 1
+        signalState := 0
+
+    if ta.crossover(fastEma, slowEma) and signalState == -1
+        signalState := 0
+
+// ==========================================
+// PLOTTING
+// ==========================================
+plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
+plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
+
+// Plot shape ONLY on confirmed candle close
+plotshape(finalBuy, title="BUY Signal", style=shape.labelup, location=location.belowbar, 
+          color=color.green, textcolor=color.white, text="BUY", size=size.small)
+
+plotshape(finalSell, title="SELL Signal", style=shape.labeldown, location=location.abovebar, 
+          color=color.red, textcolor=color.white, text="SELL", size=size.small)
+
+bgcolor(useOptionB ? (htfBullish ? color.new(color.green, 93) : color.new(color.red, 93)) : na, title="HTF Trend Bias")
