@@ -1,5 +1,5 @@
 //@version=5
-indicator("NQ/YM Unified 5M Trend + Structure (With Trend EMA)", overlay=true, max_lines_count=500)
+indicator("NQ/YM Unified 5M Trend + Structure (Configurable Signals)", overlay=true, max_lines_count=500)
 
 // ==========================================
 // INPUTS
@@ -29,6 +29,10 @@ showHistory   = input.bool(true, title="Show Historical Trades", group="Risk Man
 atrLen        = input.int(14, title="ATR Period", group="Risk Management")
 slAtrMult     = input.float(1.5, title="Stop Loss (x ATR)", group="Risk Management")
 rrRatio       = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk Management")
+
+// Signal Display Toggles
+showBuySignals  = input.bool(true, title="Show BUY Labels", group="Signal Display Settings")
+showSellSignals = input.bool(true, title="Show SELL Labels", group="Signal Display Settings")
 
 // ==========================================
 // CALCULATIONS
@@ -144,11 +148,11 @@ plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
 plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
 plot(useTrendEma ? trendEma : na, title="Trend EMA (50)", color=trendEmaColor, linewidth=3)
 
-// Draw Signal Labels (Confirmed Close Only)
-plotshape(finalBuy, title="BUY Signal", style=shape.labelup, location=location.belowbar, 
+// Draw Signal Labels (Optional based on inputs)
+plotshape(showBuySignals and finalBuy, title="BUY Signal", style=shape.labelup, location=location.belowbar, 
           color=color.green, textcolor=color.white, text="BUY", size=size.small)
 
-plotshape(finalSell, title="SELL Signal", style=shape.labeldown, location=location.abovebar, 
+plotshape(showSellSignals and finalSell, title="SELL Signal", style=shape.labeldown, location=location.abovebar, 
           color=color.red, textcolor=color.white, text="SELL", size=size.small)
 
 // Background highlight: Green = Bullish 5M HTF, Red = Bearish 5M HTF (Only if enabled)
