@@ -1,5 +1,5 @@
 //@version=5
-indicator("NQ/YM Unified 5M Trend + Structure (Configurable Signals)", overlay=true, max_lines_count=500)
+indicator("NQ/YM Unified 5M Trend + Structure (Dashboard)", overlay=true, max_lines_count=500)
 
 // ==========================================
 // INPUTS
@@ -33,6 +33,9 @@ rrRatio       = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk 
 // Signal Display Toggles
 showBuySignals  = input.bool(true, title="Show BUY Labels", group="Signal Display Settings")
 showSellSignals = input.bool(true, title="Show SELL Labels", group="Signal Display Settings")
+
+// Dashboard Settings
+showDashboard   = input.bool(true, title="Show Trading Dashboard", group="Dashboard Settings")
 
 // ==========================================
 // CALCULATIONS
@@ -140,6 +143,46 @@ if candleClosed
 if signalState != 0 and not na(currentSlLine)
     line.set_x2(currentSlLine, bar_index)
     line.set_x2(currentTpLine, bar_index)
+
+// ==========================================
+// DASHBOARD / CHECKLIST TABLE UI
+// ==========================================
+var table checklistTable = table.new(position = position.top_right, columns = 2, rows = 6, bgcolor = color.new(color.black, 20), border_color = color.gray, border_width = 1)
+
+if barstate.islast and showDashboard
+    // Determine macro bias text and color
+    bool isBullishBias = (close >= trendEma) and (fastEma > slowEma)
+    string biasText = isBullishBias ? "BULLISH 🟢" : "BEARISH 🔴"
+    color biasColor = isBullishBias ? color.new(color.green, 20) : color.new(color.red, 20)
+
+    // Row 0: Title Header
+    table.cell(checklistTable, 0, 0, "TRADING DASHBOARD", text_color=color.white, text_size=size.small, bgcolor=color.gray)
+    table.cell(checklistTable, 1, 0, "STATUS", text_color=color.white, text_size=size.small, bgcolor=color.gray)
+
+    // Row 1: Macro Bias
+    table.cell(checklistTable, 0, 1, "Macro Trend (50 EMA)", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 1, biasText, text_color=color.white, text_size=size.small, bgcolor=biasColor)
+
+    // Row 2: EMA Stack Check
+    bool emaAligned = math.abs(fastEma - slowEma) > (atrVal * 0.05)
+    table.cell(checklistTable, 0, 2, "9/21 EMA Separation", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 2, emaAligned ? "FANNED [OK]" : "TANGLED [CHOP]", text_color=color.white, text_size=size.small, bgcolor=emaAligned ? color.new(color.green, 50) : color.new(color.orange, 50))
+
+    // Row 3: Choppiness Check
+    bool chopOk = chopVal < chopThreshold
+    table.cell(checklistTable, 0, 3, "Choppiness (< 55)", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 3, chopOk ? "TRENDING [OK]" : "CHOPPY [PASS]", text_color=color.white, text_size=size.small, bgcolor=chopOk ? color.new(color.green, 50) : color.new(color.red, 50))
+
+    // Row 4: HTF Alignment Check
+    table.cell(checklistTable, 0, 4, "5M HTF Filter", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 4, htfBullish ? "BULLISH" : "BEARISH", text_color=color.white, text_size=size.small, bgcolor=htfBullish ? color.new(color.green, 50) : color.new(color.red, 50))
+
+    // Row 5: Candle Status
+    table.cell(checklistTable, 0, 5, "Candle Close Status", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 5, candleClosed ? "CLOSED [READY]" : "FORMING...", text_color=color.white, text_size=size.small, bgcolor=candleClosed ? color.blue : color.gray)
+
+else if barstate.islast and not showDashboard
+    table.clear(checklistTable, 0, 0, 1, 5) // Clear table cells if dashboard is toggled off
 
 // ==========================================
 // PLOTTING & VISUALS
