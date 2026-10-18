@@ -147,7 +147,7 @@ if signalState != 0 and not na(currentSlLine)
 // ==========================================
 // DASHBOARD / CHECKLIST TABLE UI
 // ==========================================
-var table checklistTable = table.new(position = position.top_right, columns = 2, rows = 6, bgcolor = color.new(color.black, 20), border_color = color.gray, border_width = 1)
+var table checklistTable = table.new(position = position.top_right, columns = 2, rows = 5, bgcolor = color.new(color.black, 20), border_color = color.gray, border_width = 1)
 
 if barstate.islast and showDashboard
     // Determine macro bias text and color
@@ -177,12 +177,8 @@ if barstate.islast and showDashboard
     table.cell(checklistTable, 0, 4, "5M HTF Filter", text_color=color.white, text_size=size.small)
     table.cell(checklistTable, 1, 4, htfBullish ? "BULLISH" : "BEARISH", text_color=color.white, text_size=size.small, bgcolor=htfBullish ? color.new(color.green, 50) : color.new(color.red, 50))
 
-    // Row 5: Candle Status
-    table.cell(checklistTable, 0, 5, "Candle Close Status", text_color=color.white, text_size=size.small)
-    table.cell(checklistTable, 1, 5, candleClosed ? "CLOSED [READY]" : "FORMING...", text_color=color.white, text_size=size.small, bgcolor=candleClosed ? color.blue : color.gray)
-
 else if barstate.islast and not showDashboard
-    table.clear(checklistTable, 0, 0, 1, 5) // Clear table cells if dashboard is toggled off
+    table.clear(checklistTable, 0, 0, 1, 4) // Clear table cells if dashboard is toggled off
 
 // ==========================================
 // PLOTTING & VISUALS
