@@ -4,7 +4,9 @@ indicator("NQ/YM Unified 5M Trend + Structure (Dashboard)", overlay=true, max_li
 // ==========================================
 // INPUTS
 // ==========================================
+useEma9       = input.bool(true, title="Show 9 EMA?", group="Core EMA Settings")
 fastLen       = input.int(9, title="Fast EMA Length", group="Core EMA Settings")
+useEma21      = input.bool(true, title="Show 21 EMA?", group="Core EMA Settings")
 slowLen       = input.int(21, title="Slow EMA Length", group="Core EMA Settings")
 
 // Trend Context EMA Settings (Visual Only)
@@ -206,11 +208,11 @@ else if barstate.islast and not showDashboard
 // ==========================================
 // PLOTTING & VISUALS
 // ==========================================
-plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
-plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
+plot(useEma9 ? fastEma : na, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
+plot(useEma21 ? slowEma : na, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
 plot(useTrendEma ? trendEma : na, title="Trend EMA (50)", color=trendEmaColor, linewidth=3)
 
-// Optional Long-Term EMAs Plots (Distinct colors: Purple for 120, Slate/Blue-Grey for 200)
+// Optional Long-Term EMAs Plots
 plot(useEma120 ? ema120 : na, title="120 EMA", color=color.rgb(156, 39, 176), linewidth=2)
 plot(useEma200 ? ema200 : na, title="200 EMA", color=color.rgb(96, 125, 139), linewidth=2)
 
