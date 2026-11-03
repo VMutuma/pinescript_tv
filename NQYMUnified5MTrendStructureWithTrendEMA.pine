@@ -11,6 +11,12 @@ slowLen       = input.int(21, title="Slow EMA Length", group="Core EMA Settings"
 useTrendEma   = input.bool(true, title="Show Trend EMA?", group="Trend Context EMA")
 trendLen      = input.int(50, title="Trend EMA Length", group="Trend Context EMA")
 
+// Optional Long-Term EMAs (Visual Only - No Execution Impact)
+useEma120     = input.bool(false, title="Show 120 EMA?", group="Optional Long-Term EMAs")
+ema120Len     = input.int(120, title="120 EMA Length", group="Optional Long-Term EMAs")
+useEma200     = input.bool(false, title="Show 200 EMA?", group="Optional Long-Term EMAs")
+ema200Len     = input.int(200, title="200 EMA Length", group="Optional Long-Term EMAs")
+
 // Structure Break Confirmation
 breakLookback = input.int(5, title="Breakout Lookback Bars", group="Structure Confirmation")
 
@@ -44,6 +50,8 @@ showDashboard   = input.bool(true, title="Show Trading Dashboard", group="Dashbo
 fastEma  = ta.ema(close, fastLen)
 slowEma  = ta.ema(close, slowLen)
 trendEma = ta.ema(close, trendLen)
+ema120   = ta.ema(close, ema120Len)
+ema200   = ta.ema(close, ema200Len)
 atrVal   = ta.atr(atrLen)
 
 // Dynamic Color for Trend EMA (Green if Price >= EMA, Red if Price < EMA)
@@ -180,7 +188,7 @@ if barstate.islast and showDashboard
     table.cell(checklistTable, 1, 0, "STATUS", text_color=color.white, text_size=size.small, bgcolor=color.gray)
 
     // Row 1: Macro Bias
-    table.cell(checklistTable, 0, 1, "Macro Trend (50 EMA)", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 0, 1, "Macro Trend", text_color=color.white, text_size=size.small)
     table.cell(checklistTable, 1, 1, biasText, text_color=color.white, text_size=size.small, bgcolor=biasColor)
 
     // Row 2: EMA Stack Check
@@ -201,6 +209,10 @@ else if barstate.islast and not showDashboard
 plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
 plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
 plot(useTrendEma ? trendEma : na, title="Trend EMA (50)", color=trendEmaColor, linewidth=3)
+
+// Optional Long-Term EMAs Plots (Distinct colors: Purple for 120, Slate/Blue-Grey for 200)
+plot(useEma120 ? ema120 : na, title="120 EMA", color=color.rgb(156, 39, 176), linewidth=2)
+plot(useEma200 ? ema200 : na, title="200 EMA", color=color.rgb(96, 125, 139), linewidth=2)
 
 // Background highlight: Green = Bullish 5M HTF, Red = Bearish 5M HTF (Only if enabled)
 bgcolor(useHtfFilter ? (htfBullish ? color.new(color.green, 93) : color.new(color.red, 93)) : na, title="5M HTF Bias")
