@@ -24,11 +24,12 @@ chopLen       = input.int(14, title="CHOP Length", group="Anti-Chop Filter")
 chopThreshold = input.float(55.0, title="Max Allowed CHOP (Below = Trend)", group="Anti-Chop Filter")
 
 // ATR Risk Management & Visual Levels
-useTpSl       = input.bool(true, title="Draw SL & TP Lines?", group="Risk Management")
-showHistory   = input.bool(true, title="Show Historical Trades", group="Risk Management")
-atrLen        = input.int(14, title="ATR Period", group="Risk Management")
-slAtrMult     = input.float(1.5, title="Stop Loss (x ATR)", group="Risk Management")
-rrRatio       = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk Management")
+useTpSl           = input.bool(true, title="Draw SL & TP Lines?", group="Risk Management")
+showHistory       = input.bool(true, title="Show Historical SL/TP Lines", group="Risk Management")
+showSignalHistory = input.bool(false, title="Show Historical BUY/SELL Signals", group="Risk Management")
+atrLen            = input.int(14, title="ATR Period", group="Risk Management")
+slAtrMult         = input.float(1.5, title="Stop Loss (x ATR)", group="Risk Management")
+rrRatio           = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk Management")
 
 // Signal Display Toggles
 showBuySignals  = input.bool(true, title="Show BUY Labels", group="Signal Display Settings")
@@ -88,8 +89,11 @@ var int signalState = 0
 var float activeSL   = na
 var float activeTP   = na
 
-var line currentSlLine = na
-var line currentTpLine = na
+var line currentSlLine = line(na)
+var line currentTpLine = line(na)
+
+// Arrays to track dynamic labels for history control
+var label[] activeLabels = array.new_label()
 
 bool finalBuy  = false
 bool finalSell = false
@@ -102,7 +106,7 @@ if candleClosed
         bool crossExit = ta.crossunder(fastEma, slowEma)
         
         if hitTp or hitSl or crossExit
-            if not showHistory
+            if not showHistory and not na(currentSlLine)
                 line.delete(currentSlLine)
                 line.delete(currentTpLine)
             signalState := 0
@@ -113,7 +117,7 @@ if candleClosed
         bool crossExit = ta.crossover(fastEma, slowEma)
         
         if hitTp or hitSl or crossExit
-            if not showHistory
+            if not showHistory and not na(currentSlLine)
                 line.delete(currentSlLine)
                 line.delete(currentTpLine)
             signalState := 0
@@ -129,6 +133,14 @@ if candleClosed
             currentSlLine := line.new(bar_index, activeSL, bar_index, activeSL, color=color.red, style=line.style_dashed, width=2)
             currentTpLine := line.new(bar_index, activeTP, bar_index, activeTP, color=color.green, style=line.style_dashed, width=2)
 
+        if showBuySignals
+            if not showSignalHistory and array.size(activeLabels) > 0
+                // Delete previous label if history is hidden
+                label.delete(array.shift(activeLabels))
+            
+            lbl = label.new(bar_index, low, text="BUY", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+            array.push(activeLabels, lbl)
+
     else if rawSell and signalState == 0
         finalSell   := true
         signalState := -1
@@ -138,6 +150,14 @@ if candleClosed
             
             currentSlLine := line.new(bar_index, activeSL, bar_index, activeSL, color=color.red, style=line.style_dashed, width=2)
             currentTpLine := line.new(bar_index, activeTP, bar_index, activeTP, color=color.green, style=line.style_dashed, width=2)
+
+        if showSellSignals
+            if not showSignalHistory and array.size(activeLabels) > 0
+                // Delete previous label if history is hidden
+                label.delete(array.shift(activeLabels))
+            
+            lbl = label.new(bar_index, high, text="SELL", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+            array.push(activeLabels, lbl)
 
 // Dynamically extend active lines forward while trade is open; freeze them upon exit
 if signalState != 0 and not na(currentSlLine)
@@ -181,13 +201,6 @@ else if barstate.islast and not showDashboard
 plot(fastEma, title="9 EMA", color=color.rgb(33, 150, 243), linewidth=2)
 plot(slowEma, title="21 EMA", color=color.rgb(255, 152, 0), linewidth=2)
 plot(useTrendEma ? trendEma : na, title="Trend EMA (50)", color=trendEmaColor, linewidth=3)
-
-// Draw Signal Labels (Optional based on inputs)
-plotshape(showBuySignals and finalBuy, title="BUY Signal", style=shape.labelup, location=location.belowbar, 
-          color=color.green, textcolor=color.white, text="BUY", size=size.small)
-
-plotshape(showSellSignals and finalSell, title="SELL Signal", style=shape.labeldown, location=location.abovebar, 
-          color=color.red, textcolor=color.white, text="SELL", size=size.small)
 
 // Background highlight: Green = Bullish 5M HTF, Red = Bearish 5M HTF (Only if enabled)
 bgcolor(useHtfFilter ? (htfBullish ? color.new(color.green, 93) : color.new(color.red, 93)) : na, title="5M HTF Bias")
