@@ -1,0 +1,163 @@
+//@version=5
+indicator("VWAP + 9/21 EMA Clean Indicator", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ==========================================
+// INPUTS
+// ==========================================
+// EMA Settings
+fastLen    = input.int(9, title="Fast EMA Length", group="EMA Settings")
+slowLen    = input.int(21, title="Slow EMA Length", group="EMA Settings")
+
+// Dynamic VWAP Settings
+vwapSrc    = input.source(hlc3, title="VWAP Source", group="VWAP Settings")
+vwapAnchor = input.string("Session", title="Anchor Period", options=["Session", "Week", "Month", "Quarter", "Year"], group="VWAP Settings")
+
+// ATR Risk Management & Visual Levels
+useTpSl          = input.bool(true, title="Draw SL & TP Lines?", group="Risk Management")
+showHistory      = input.bool(true, title="Show Historical SL/TP Lines", group="Risk Management")
+showSignalHistory = input.bool(false, title="Show Historical BUY/SELL Signals", group="Risk Management")
+atrLen           = input.int(14, title="ATR Period", group="Risk Management")
+slAtrMult        = input.float(1.5, title="Stop Loss (x ATR)", group="Risk Management")
+rrRatio          = input.float(2.0, title="Risk-to-Reward Ratio (TP)", group="Risk Management")
+
+// Signal & Display Toggles
+showSignals   = input.bool(true, title="Show BUY/SELL Labels", group="Display Settings")
+showDashboard = input.bool(true, title="Show Trading Dashboard", group="Display Settings")
+
+// ==========================================
+// CALCULATIONS
+// ==========================================
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+atrVal  = ta.atr(atrLen)
+
+bool crossUnderFastSlow = ta.crossunder(fastEma, slowEma)
+bool crossOverFastSlow  = ta.crossover(fastEma, slowEma)
+
+// VWAP Anchor logic
+bool isNewVwapPeriod = switch vwapAnchor
+    "Session" => timeframe.change("D")
+    "Week"    => timeframe.change("W")
+    "Month"   => timeframe.change("M")
+    "Quarter" => timeframe.change("3M")
+    "Year"    => timeframe.change("12M")
+    => timeframe.change("D")
+
+[vwapVal, _, _] = ta.vwap(vwapSrc, isNewVwapPeriod, 1.0)
+
+// ==========================================
+// SIGNAL LOGIC (VWAP Cross + Responsive EMA Trend)
+// ==========================================
+// Allow long when price crosses above VWAP and fast EMA is either above slow EMA or turning up rapidly
+bool bullishBias = (fastEma > slowEma) or (ta.crossover(fastEma, slowEma)) or (close > fastEma and fastEma >= slowEma[1])
+bool bearishBias = (fastEma < slowEma) or (ta.crossunder(fastEma, slowEma)) or (close < fastEma and fastEma <= slowEma[1])
+
+bool rawBuy  = ta.crossover(close, vwapVal) and bullishBias
+bool rawSell = ta.crossunder(close, vwapVal) and bearishBias
+
+// ==========================================
+// EXECUTION & DYNAMIC LINE MANAGEMENT
+// ==========================================
+candleClosed = barstate.isconfirmed
+
+var int signalState = 0 
+var float activeSL  = na
+var float activeTP  = na
+
+var line currentSlLine = line(na)
+var line currentTpLine = line(na)
+var label[] activeLabels = array.new_label()
+
+if candleClosed
+    // Check exit conditions for active Longs
+    if signalState == 1
+        bool hitTp   = high >= activeTP
+        bool hitSl   = low <= activeSL
+        bool crossExit = crossUnderFastSlow
+        
+        if hitTp or hitSl or crossExit
+            if not showHistory and not na(currentSlLine)
+                line.delete(currentSlLine)
+                line.delete(currentTpLine)
+            signalState := 0
+
+    // Check exit conditions for active Shorts
+    else if signalState == -1
+        bool hitTp   = low <= activeTP
+        bool hitSl   = high >= activeSL
+        bool crossExit = crossOverFastSlow
+        
+        if hitTp or hitSl or crossExit
+            if not showHistory and not na(currentSlLine)
+                line.delete(currentSlLine)
+                line.delete(currentTpLine)
+            signalState := 0
+
+    // New Long Entry
+    if rawBuy and signalState == 0
+        signalState := 1
+        if useTpSl
+            activeSL := close - (atrVal * slAtrMult)
+            activeTP := close + ((close - activeSL) * rrRatio)
+            
+            currentSlLine := line.new(bar_index, activeSL, bar_index, activeSL, color=color.red, style=line.style_dashed, width=2)
+            currentTpLine := line.new(bar_index, activeTP, bar_index, activeTP, color=color.green, style=line.style_dashed, width=2)
+
+        if showSignals
+            if not showSignalHistory and array.size(activeLabels) > 0
+                label.delete(array.shift(activeLabels))
+            lbl = label.new(bar_index, low, text="BUY", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+            array.push(activeLabels, lbl)
+
+    // New Short Entry
+    else if rawSell and signalState == 0
+        signalState := -1
+        if useTpSl
+            activeSL := close + (atrVal * slAtrMult)
+            activeTP := close - ((activeSL - close) * rrRatio)
+            
+            currentSlLine := line.new(bar_index, activeSL, bar_index, activeSL, color=color.red, style=line.style_dashed, width=2)
+            currentTpLine := line.new(bar_index, activeTP, bar_index, activeTP, color=color.green, style=line.style_dashed, width=2)
+
+        if showSignals
+            if not showSignalHistory and array.size(activeLabels) > 0
+                label.delete(array.shift(activeLabels))
+            lbl = label.new(bar_index, high, text="SELL", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+            array.push(activeLabels, lbl)
+
+// Extend active SL/TP lines across candles until hit
+if signalState != 0 and not na(currentSlLine)
+    line.set_x2(currentSlLine, bar_index)
+    line.set_x2(currentTpLine, bar_index)
+
+// ==========================================
+// DASHBOARD / CHECKLIST TABLE UI
+// ==========================================
+var table checklistTable = table.new(position = position.top_right, columns = 2, rows = 3, bgcolor = color.new(color.black, 20), border_color = color.gray, border_width = 1)
+
+if barstate.islast and showDashboard
+    bool isBullish = fastEma > slowEma
+    string biasText = isBullish ? "BULLISH 🟢" : "BEARISH 🔴"
+    color biasColor = isBullish ? color.new(color.green, 20) : color.new(color.red, 20)
+
+    string tradeStatus = signalState == 1 ? "LONG ACTIVE 📈" : signalState == -1 ? "SHORT ACTIVE 📉" : "WAITING ⏳"
+    color tradeColor = signalState != 0 ? color.new(color.blue, 40) : color.new(color.gray, 40)
+
+    table.cell(checklistTable, 0, 0, "TRADING DASHBOARD", text_color=color.white, text_size=size.small, bgcolor=color.gray)
+    table.cell(checklistTable, 1, 0, "STATUS", text_color=color.white, text_size=size.small, bgcolor=color.gray)
+
+    table.cell(checklistTable, 0, 1, "9/21 EMA Trend", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 1, biasText, text_color=color.white, text_size=size.small, bgcolor=biasColor)
+
+    table.cell(checklistTable, 0, 2, "Current State", text_color=color.white, text_size=size.small)
+    table.cell(checklistTable, 1, 2, tradeStatus, text_color=color.white, text_size=size.small, bgcolor=tradeColor)
+
+else if barstate.islast and not showDashboard
+    table.clear(checklistTable, 0, 0, 1, 2)
+
+// ==========================================
+// PLOTTING & VISUALS
+// ==========================================
+plot(fastEma, title="9 EMA", color=color.rgb(52, 152, 219), linewidth=2)  // Soft Blue
+plot(slowEma, title="21 EMA", color=color.rgb(243, 156, 18), linewidth=2)  // Warm Amber
+plot(vwapVal, title="Dynamic VWAP", color=color.white, linewidth=2)        // White Anchor
